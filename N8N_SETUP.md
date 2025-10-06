@@ -1,119 +1,220 @@
-# n8n Server Setup Guide
+# n8n Deployment Setup - Complete Guide
 
-This guide helps you deploy a secure, production-ready n8n instance and prepare it for workflow imports from this project.
+Deploy n8n to your server with one-click scripts for initial setup and ongoing workflow deployments.
 
-## 1) Choose a deployment method
+## Prerequisites
 
-- Docker (recommended)
-- n8n Cloud (skip infra steps; only configure environment)
+### On Your Server
+- Docker and docker compose installed
+- SSH access (with user and optional SSH key)
+- Ports open: 5678 (n8n UI) or 80/443 if using a domain
 
-## 2) Docker deployment (recommended)
+### In This Repo
+Before starting, ensure you have:
+- `server/docker-compose.yml` - Docker compose configuration for n8n
+- `server/.env.example` - Template environment file with variables like:
+  - `N8N_HOST` (your domain or IP)
+  - `N8N_PORT` (default: 5678)
+  - `N8N_BASIC_AUTH_USER` and `N8N_BASIC_AUTH_PASSWORD`
+  - Other n8n configuration
 
-Create a `docker-compose.yml` on your server:
+---
 
-```yaml
-version: '3.8'
-services:
-  n8n:
-    image: n8nio/n8n:latest
-    restart: unless-stopped
-    ports:
-      - '5678:5678'
-    environment:
-      - N8N_HOST=${N8N_HOST}
-      - N8N_PORT=5678
-      - N8N_PROTOCOL=https
-      - WEBHOOK_URL=https://${N8N_HOST}/
-      - GENERIC_TIMEZONE=${GENERIC_TIMEZONE:-UTC}
-      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY}
-      - N8N_BASIC_AUTH_ACTIVE=true
-      - N8N_BASIC_AUTH_USER=${N8N_BASIC_AUTH_USER}
-      - N8N_BASIC_AUTH_PASSWORD=${N8N_BASIC_AUTH_PASSWORD}
-      - NODE_FUNCTION_ALLOW_EXTERNAL=axios,lodash,dayjs
-      - NODE_OPTIONS=--max-old-space-size=2048
-    volumes:
-      - n8n_data:/home/node/.n8n
-volumes:
-  n8n_data:
-```
+## One-Time Setup (From Your Laptop)
 
-Create a `.env` file alongside `docker-compose.yml` with secure values:
+### Step 1: Create `.env.deploy`
 
+Create `.env.deploy` in the project root with your server details:
 ```bash
-N8N_HOST=your.domain.com
-GENERIC_TIMEZONE=UTC
-N8N_ENCRYPTION_KEY=replace-with-32+char-random-string
-N8N_BASIC_AUTH_USER=admin
-N8N_BASIC_AUTH_PASSWORD=replace-with-strong-password
+# Server connection
+DEPLOY_HOST=your.server.com          # Your server IP or domain
+DEPLOY_USER=ubuntu                   # SSH user
+DEPLOY_SSH_KEY=                      # Optional: path to SSH key (leave empty for default)
+
+# Server paths
+REMOTE_N8N_DIR=/home/ubuntu/n8n              # Where n8n docker-compose will run
+REMOTE_PROJECT_DIR=/home/ubuntu/leadcapture  # Where this repo will live on server
 ```
 
-Start n8n:
+**Important**: Both directories should be under your user's home to avoid permission issues.
 
+### Step 2: Run First-Time Setup
+
+This copies the docker-compose setup to your server and starts n8n:
 ```bash
-docker compose pull && docker compose up -d
+chmod +x scripts/*.sh
+./scripts/first_setup.sh
 ```
 
-## 3) TLS and reverse proxy
+**What this does:**
+- Creates `REMOTE_N8N_DIR` on the server
+- Copies `server/docker-compose.yml` and `server/.env.example` to the server
+- Starts n8n container (accessible but not fully configured)
 
-Put n8n behind a reverse proxy (Nginx/Traefik/Caddy) with a valid TLS certificate. Example (Caddy):
+### Step 3: Configure n8n on Server
 
-```caddyfile
-your.domain.com {
-  reverse_proxy localhost:5678
-}
-```
-
-Ensure `N8N_PROTOCOL=https` and `WEBHOOK_URL` match the public URL.
-
-## 4) Create the owner user
-
-Visit `https://your.domain.com` to create the first (owner) account. Keep these credentials safe.
-
-## 5) Hardening checklist
-
-- Enable basic auth (already set above) or SSO in front of n8n.
-- Keep `N8N_ENCRYPTION_KEY` secret and backed up; it encrypts credentials at rest.
-- Restrict server SSH access, enable automatic security updates.
-- Backup volume `n8n_data` regularly.
-
-## 6) Environment variables for workflows
-
-Set any runtime variables your workflows need via Docker env or `.env` (e.g., Slack/Twilio/HubSpot tokens). Prefer secret managers or Docker secrets for sensitive values.
-
-## 7) Using the n8n CLI on the server
-
-The container includes a CLI you can run with `docker compose exec`:
-
+SSH to your server and edit the environment file:
 ```bash
-# Export all workflows to a folder
-docker compose exec n8n n8n export:workflow --all --separate --output=/home/node/.n8n/exports
-
-# Import workflows from a folder
-docker compose exec n8n n8n import:workflow --input=/home/node/.n8n/exports
+ssh your.server.com
+cd /home/ubuntu/n8n  # Or your REMOTE_N8N_DIR
+nano .env
 ```
 
-Notes:
-- `--separate` writes one file per workflow, easier for Git.
-- Credentials are not exported by default in plaintext. Re-create credentials on the server or use secure export/import (see deployment guide).
+Fill in required values:
+- `N8N_HOST` - Your domain or server IP
+- `N8N_BASIC_AUTH_USER` and `N8N_BASIC_AUTH_PASSWORD`
+- Any other n8n settings you need
 
-## 8) Webhook URLs
-
-Your workflows that start with Webhook triggers will be reachable at:
-
-```
-https://your.domain.com/webhook/<path>
+Then restart n8n:
+```bash
+docker compose up -d
 ```
 
-Use the test URL variant during development if needed:
+### Step 4: Copy Project to Server (for export/import scripts)
 
+If you want to run export/import scripts directly on the server:
+```bash
+# From your laptop
+rsync -avz -e "ssh -i ~/.ssh/your-key" \
+  --exclude='.git' \
+  --exclude='node_modules' \
+  ./ your.server.com:/home/ubuntu/leadcapture/
 ```
-https://your.domain.com/webhook-test/<path>
+
+Or use git:
+```bash
+ssh your.server.com
+cd /home/ubuntu  # Or parent of REMOTE_PROJECT_DIR
+git clone https://github.com/yourusername/yourrepo.git leadcapture
 ```
 
-## 9) Health and maintenance
+---
 
-- Check container logs: `docker compose logs -f n8n`
-- Update n8n: `docker compose pull && docker compose up -d`
-- Backup: snapshot `n8n_data` volume (files under `/home/node/.n8n`).
+## Working with Workflows
 
+### Deploy Workflows (From Your Laptop → Server)
 
+To push your local workflows to the server:
+```bash
+./scripts/deploy.sh
+```
+
+**What this does:**
+1. Copies `workflows/` directory from your laptop to server
+2. Imports workflows into running n8n container (with --overwrite flag)
+
+### Export Workflows (From Server → Repo)
+
+To save current n8n workflows back to the repo (run **on the server**):
+```bash
+cd /home/ubuntu/leadcapture  # Your REMOTE_PROJECT_DIR
+./scripts/export_workflows.sh
+```
+
+**What this does:**
+1. Exports all workflows from n8n to `workflows/` directory
+2. Then commit and push:
+```bash
+   git add workflows/
+   git commit -m "Export workflows from server"
+   git push
+```
+
+### Import Workflows (Manually on Server)
+
+To import workflows that are already on the server (run **on the server**):
+```bash
+cd /home/ubuntu/leadcapture  # Your REMOTE_PROJECT_DIR
+./scripts/import_workflows.sh
+```
+
+---
+
+## n8n Configuration (In the UI)
+
+After n8n is running, access it at `http://your.server.com:5678` and configure:
+
+### 1. Credentials
+- **Google Sheets** - OAuth2 credential for accessing your spreadsheet
+- **SMTP/Gmail** - For sending notification emails
+
+### 2. Workflow Configuration
+Point workflow nodes to your Google Sheet tabs:
+- `High` - High-priority leads
+- `Medium` - Medium-priority leads  
+- `Low` - Low-priority leads
+- `Errors` - Error logging
+- `Config` - Settings (webhook URLs, email config, etc.)
+- `Scoring_Rules` - Lead scoring configuration
+- `Metadata` - System metadata
+
+### 3. Google Sheet Setup (Config Tab)
+Fill in these values in your Config sheet:
+- `slack_webhook_url` - For Slack notifications (optional)
+- `discord_webhook_url` - For Discord notifications (optional)
+- Email settings if not using credentials
+- Any other workflow-specific configuration
+
+---
+
+## Common Commands
+
+### On Your Laptop
+```bash
+# Deploy workflows to server
+./scripts/deploy.sh
+```
+
+### On the Server
+```bash
+# Restart n8n
+cd /home/ubuntu/n8n && docker compose restart
+
+# View n8n logs
+cd /home/ubuntu/n8n && docker compose logs -f n8n
+
+# Export workflows
+cd /home/ubuntu/leadcapture && ./scripts/export_workflows.sh
+
+# Import workflows
+cd /home/ubuntu/leadcapture && ./scripts/import_workflows.sh
+```
+
+---
+
+## Troubleshooting
+
+### "n8n container not running"
+```bash
+cd /home/ubuntu/n8n
+docker compose ps
+docker compose up -d
+```
+
+### "Missing $ENV_FILE"
+Create `.env.deploy` in your project root with the values from Step 1.
+
+### Scripts have hardcoded paths
+`export_workflows.sh` and `import_workflows.sh` expect n8n at `~/n8n`. If your `REMOTE_N8N_DIR` is different, you'll need to edit these scripts or create a symlink:
+```bash
+ln -s /your/actual/n8n/path ~/n8n
+```
+
+### Permission denied
+Make sure your user owns both directories:
+```bash
+sudo chown -R $USER:$USER /home/ubuntu/n8n /home/ubuntu/leadcapture
+```
+
+---
+
+## Quick Reference
+
+| Action | Command | Where |
+|--------|---------|-------|
+| Initial setup | `./scripts/first_setup.sh` | Laptop |
+| Deploy workflows | `./scripts/deploy.sh` | Laptop |
+| Export workflows | `./scripts/export_workflows.sh` | Server |
+| Import workflows | `./scripts/import_workflows.sh` | Server |
+| Restart n8n | `cd ~/n8n && docker compose restart` | Server |
+| View logs | `cd ~/n8n && docker compose logs -f` | Server |

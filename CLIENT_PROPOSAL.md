@@ -47,10 +47,24 @@ A comprehensive, automated lead capture and management system built on n8n that 
 ### 🏢 **CRM Integration** (Choose what you need)
 
 #### **HubSpot Integration**
-- Automatic contact creation
-- Deal creation with priority-based stages
-- Custom properties mapping
-- Lead scoring sync
+- **Automatic contact creation** - Every new lead instantly becomes a HubSpot contact without manual data entry. No more copying fields from emails or forms into HubSpot one by one.
+
+- **Deal creation with priority-based stages** - High-priority leads automatically create deals in "Hot Lead" stage, medium in "Qualified" stage, and low in "Nurture" stage. Your pipeline reflects lead quality immediately, and sales reps know which deals to work first.
+
+- **Custom properties mapping** - All lead data (industry, budget, message, source, score) flows into HubSpot custom fields. You get complete lead context in one place for personalized follow-up and accurate reporting.
+
+- **Lead scoring sync** - The system's calculated score (0-100) writes directly to HubSpot's lead score field. Your entire team sees the same quality metric, and you can trigger HubSpot workflows based on score thresholds.
+
+**Why This Matters:**
+- **Zero manual entry**: Sales reps spend time selling, not typing lead info into HubSpot
+- **Instant pipeline visibility**: Managers see new leads and their priority in real-time dashboards
+- **Consistent data**: Every lead has complete information captured the same way every time
+- **Automated workflows**: Trigger HubSpot sequences, task assignments, or email campaigns based on lead score and priority
+- **Better reporting**: Analyze lead quality, source performance, and conversion rates with clean, structured data
+- **No leads lost**: Automatic sync means nothing falls through the cracks between form submission and CRM
+
+**Business Impact:**
+A lead submits a form → Within seconds, they're in HubSpot with full context → Sales rep gets notified → They can see the lead's score, industry, and message → They follow up informed and fast → Higher conversion rates and shorter sales cycles.
 
 #### **Salesforce Integration**
 - Lead object creation

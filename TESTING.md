@@ -70,8 +70,8 @@ curl -X POST "$WEBHOOK_URL" \
     "phone": "+19876543210",
     "company": "Enterprise Solutions Corp",
     "website": "https://enterprisesolutions.com",
-    "message": "We\'re ready to migrate from our current system. We have a team of 200 sales reps and need implementation within 60 days. Budget approved for $100k annually. Can we schedule a demo this week?",
-    "budget": "$100,000/year",
+    "message": "We\'re ready to migrate from our current system. We have a team of 200 sales reps and need implementation within 60 days. Budget approved for 100 usd annually. Can we schedule a demo this week?",
+    "budget": "100000",
     "source": "google-ads",
     "industry": "Technology",
     "job_title": "VP of Sales"
