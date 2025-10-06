@@ -1,0 +1,6 @@
+.env.deploy
+.env.local
+.env.test
+.env.production
+.env.staging
+.env.*.local
