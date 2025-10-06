@@ -12,7 +12,7 @@ Add or update these rows:
 
 | Setting | Value | Enabled |
 |---------|-------|---------|
-| slack_webhook_url | https://hooks.slack.com/services/… | TRUE |
+| slack_webhook_url | YOUR_WEBHOOK_URL | TRUE |
 | slack_channel | #leads | TRUE |
 
 - Set both rows’ Enabled to TRUE to activate Slack alerts.

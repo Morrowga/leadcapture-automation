@@ -11,7 +11,7 @@ Add or update these rows:
 
 | Setting | Value | Enabled |
 |---------|-------|---------|
-| discord_webhook_url | https://discord.com/api/webhooks/… | TRUE |
+| discord_webhook_url | YOUR_WEBHOOK_URL | TRUE |
 
 - Set Enabled to TRUE to activate Discord alerts.
 

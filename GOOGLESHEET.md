@@ -23,9 +23,9 @@ Add rows like:
 
 | Setting | Value | Enabled |
 |---------|-------|---------|
-| slack_webhook_url | https://hooks.slack.com/services/... | TRUE |
+| slack_webhook_url | YOUR_WEBHOOK_URL | TRUE |
 | slack_channel | #leads | TRUE |
-| discord_webhook_url | https://discord.com/api/webhooks/... | TRUE |
+| discord_webhook_url | YOUR_WEBHOOK_URL | TRUE |
 | email_high_enabled | - | TRUE |
 | email_high_from | sales@yourcompany.com | TRUE |
 | email_high_to | sales-lead@yourcompany.com | TRUE |
