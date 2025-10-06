@@ -148,7 +148,7 @@
             "Company": "={{ $json.company }}",
             "Message": "={{ $json.message }}",
             "Source": "={{ $json.source }}",
-            "Score": "={{ $json.leadScore }}",
+            "Score": "={{ $json.lead_score }}",
             "Priority": "={{ $json.priority }}",
             "Created": "={{ $json.submittedAt }}",
             "Email": "={{ $json.email }}"
@@ -294,10 +294,10 @@
             "Name": "={{ $json.name }}",
             "Lead ID": "={{ $json.id }}",
             "Phone": "={{ $json.phone }}",
-            "Company": "={{ $json.company }}",
+            "Company": "={{ $json.company ?? 'Unknown Company' }}",
             "Message": "={{ $json.message }}",
             "Source": "={{ $json.source }}",
-            "Score": "={{ $json.leadScore }}",
+            "Score": "={{ $json.lead_score }}",
             "Priority": "={{ $json.priority }}",
             "Created": "={{ $json.submittedAt }}",
             "Email": "={{ $json.email }}"
@@ -1639,9 +1639,7 @@
             }
           ]
         },
-        "options": {
-          "returnFirstMatch": true
-        }
+        "options": {}
       },
       "type": "n8n-nodes-base.googleSheets",
       "typeVersion": 4.7,
@@ -1683,9 +1681,7 @@
             }
           ]
         },
-        "options": {
-          "returnFirstMatch": true
-        }
+        "options": {}
       },
       "type": "n8n-nodes-base.googleSheets",
       "typeVersion": 4.7,
@@ -1727,9 +1723,7 @@
             }
           ]
         },
-        "options": {
-          "returnFirstMatch": true
-        }
+        "options": {}
       },
       "type": "n8n-nodes-base.googleSheets",
       "typeVersion": 4.7,
@@ -1775,7 +1769,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// ============================================\n// DUPLICATE HANDLER - Fixed Field Names\n// ============================================\n\nconst allResults = $input.all();\nconst originalData = $('Prepare Duplicate Check').first().json;  // Changed .item to .first()\nconst fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);\n\nconsole.log('Checking for duplicates of:', originalData.email);\n\n// Check for recent duplicates across all sheet results\nconst recentDuplicates = allResults.filter(item => {\n  // Skip empty results (empty objects)\n  if (!item.json || Object.keys(item.json).length === 0) {\n    return false;\n  }\n  \n  // Google Sheets returns \"Email\" not \"email\" (capital E)\n  const sheetEmail = item.json.Email || item.json.email;\n  const sheetCreated = item.json.Created || item.json.created || item.json.timestamp;\n  \n  if (!sheetEmail) return false;\n  \n  // Check if email matches (case-insensitive)\n  const emailMatch = sheetEmail.toLowerCase() === originalData.email.toLowerCase();\n  \n  if (!emailMatch) return false;\n  \n  // If no timestamp in sheet, consider it a duplicate (safer)\n  if (!sheetCreated) {\n    console.log('⚠️ Found match but no timestamp:', sheetEmail);\n    return true;\n  }\n  \n  // Check if within 5 minutes\n  const leadTime = new Date(sheetCreated);\n  const withinTimeWindow = leadTime > fiveMinutesAgo;\n  \n  if (emailMatch && withinTimeWindow) {\n    console.log('🔴 DUPLICATE FOUND:', sheetEmail, 'created:', sheetCreated);\n  }\n  \n  return emailMatch && withinTimeWindow;\n});\n\nconsole.log(`Found ${recentDuplicates.length} duplicate(s)`);\n\n// Return original lead data with duplicate flag\nreturn [{\n  json: {\n    ...originalData,\n    is_duplicate: recentDuplicates.length > 0,\n    duplicate_count: recentDuplicates.length,\n    duplicate_details: recentDuplicates.map(d => ({\n      email: d.json.Email,\n      created: d.json.Created,\n      priority: d.json.Priority\n    }))\n  }\n}];"
+        "jsCode": "// ============================================\n// DUPLICATE HANDLER - SIMPLE & CORRECT\n// ============================================\nconst allResults = $input.all();\nconst originalData = $('Prepare Duplicate Check').first().json;\n\n// Get current time in milliseconds\nconst nowMs = Date.now();\nconst fiveMinutesMs = 5 * 60 * 1000; // 5 minutes in milliseconds\n\nconsole.log('==========================================');\nconsole.log('🔍 Checking:', originalData.email);\nconsole.log('🕐 Current time:', new Date(nowMs).toISOString());\nconsole.log('🕐 5 mins ago:', new Date(nowMs - fiveMinutesMs).toISOString());\nconsole.log('==========================================');\n\n// Find duplicates\nconst recentDuplicates = allResults.filter((item, index) => {\n  // Skip empty objects\n  if (!item.json || !item.json.Email) {\n    return false;\n  }\n  \n  const sheetEmail = item.json.Email;\n  const sheetCreated = item.json.Created;\n  \n  console.log(`\\n[${index}] ${sheetEmail}`);\n  console.log(`    Created: ${sheetCreated}`);\n  \n  // Check email match\n  if (sheetEmail.toLowerCase() !== originalData.email.toLowerCase()) {\n    console.log('    ❌ Different email');\n    return false;\n  }\n  \n  console.log('    ✅ Email matches!');\n  \n  // No timestamp = treat as duplicate\n  if (!sheetCreated) {\n    console.log('    🔴 No timestamp - DUPLICATE');\n    return true;\n  }\n  \n  // Convert sheet timestamp to milliseconds\n  const sheetTimeMs = new Date(sheetCreated).getTime();\n  \n  // Calculate age in minutes\n  const ageMs = nowMs - sheetTimeMs;\n  const ageMinutes = (ageMs / 1000 / 60).toFixed(2);\n  \n  console.log(`    ⏱️  Age: ${ageMinutes} minutes`);\n  \n  // If less than 5 minutes old = DUPLICATE\n  const isDuplicate = ageMs < fiveMinutesMs;\n  \n  if (isDuplicate) {\n    console.log('    🔴 DUPLICATE (within 5 mins)');\n  } else {\n    console.log('    ✅ OK (older than 5 mins)');\n  }\n  \n  return isDuplicate;\n});\n\nconsole.log('\\n==========================================');\nconsole.log(`📊 Found ${recentDuplicates.length} duplicate(s)`);\nconsole.log('==========================================');\n\nreturn [{\n  json: {\n    ...originalData,\n    is_duplicate: recentDuplicates.length > 0,\n    duplicate_count: recentDuplicates.length\n  }\n}];"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -1818,19 +1812,6 @@
       ],
       "id": "a63f47ab-8278-424e-aa78-0c0232c9fe10",
       "name": "Has Duplicate ?"
-    },
-    {
-      "parameters": {
-        "errorMessage": "Duplicate Submission"
-      },
-      "type": "n8n-nodes-base.stopAndError",
-      "typeVersion": 1,
-      "position": [
-        1984,
-        -16
-      ],
-      "id": "cfb1059f-e57d-42ea-8ade-e58a8592de80",
-      "name": "Stop and Error"
     },
     {
       "parameters": {
@@ -1900,7 +1881,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// ============================================\n// TRANSFORM CONFIG FROM SHEET TO OBJECT\n// ============================================\n\nconst configRows = $('Load Config').all();\nconst leadData = $('Webhook').first().json.body || $('Webhook').first().json;\n\n// Build config object from sheet\nconst config = {\n  email: {\n    high: {},\n    medium: {},\n    low: {},\n    customer: {},\n    error: {}\n  },\n  notifications: {\n    slack: {},\n    discord: {},\n    twilio: {},\n    sns: {}\n  },\n  crm: {}\n};\n\n// Parse Integration_Settings\nfor (const row of configRows) {\n  const setting = row.json.Setting;\n  const value = row.json.Value;\n  const enabled = row.json.Enabled === 'TRUE' || row.json.Enabled === true;\n  \n  // ============================================\n  // SLACK\n  // ============================================\n  if (setting === 'slack_webhook_url') config.notifications.slack.webhook_url = value;\n  if (setting === 'slack_channel') {\n    config.notifications.slack.channel = value;\n    config.notifications.slack.enabled = enabled;\n  }\n  \n  // ============================================\n  // DISCORD\n  // ============================================\n  if (setting === 'discord_webhook_url') {\n    config.notifications.discord.webhook_url = value;\n    config.notifications.discord.enabled = enabled;\n  }\n  \n  // ============================================\n  // TWILIO\n  // ============================================\n  if (setting === 'twilio_account_sid') config.notifications.twilio.account_sid = value;\n  if (setting === 'twilio_auth_token') config.notifications.twilio.auth_token = value;\n  if (setting === 'twilio_from_number') config.notifications.twilio.from_number = value;\n  if (setting === 'twilio_to_number') {\n    config.notifications.twilio.to_number = value;\n    config.notifications.twilio.enabled = enabled;\n  }\n  \n  // ============================================\n  // AWS SNS\n  // ============================================\n  if (setting === 'sns_region') config.notifications.sns.region = value;\n  if (setting === 'sns_topic_arn') config.notifications.sns.topic_arn = value;\n  if (setting === 'sns_phone_number') {\n    config.notifications.sns.phone_number = value;\n    config.notifications.sns.enabled = enabled;\n  }\n  \n  // ============================================\n  // EMAIL - HIGH PRIORITY\n  // ============================================\n  if (setting === 'email_high_enabled') config.email.high.enabled = enabled;\n  if (setting === 'email_high_from') config.email.high.from = value;\n  if (setting === 'email_high_to') config.email.high.to = value;\n  if (setting === 'email_high_cc' && value) config.email.high.cc = value;\n  if (setting === 'email_high_bcc' && value) config.email.high.bcc = value;\n\n  // ============================================\n  // EMAIL - MEDIUM PRIORITY\n  // ============================================\n  if (setting === 'email_medium_enabled') config.email.medium.enabled = enabled;\n  if (setting === 'email_medium_from') config.email.medium.from = value;\n  if (setting === 'email_medium_to') config.email.medium.to = value;\n  if (setting === 'email_medium_cc' && value) config.email.medium.cc = value;\n  if (setting === 'email_medium_bcc' && value) config.email.medium.bcc = value;\n\n  // ============================================\n  // EMAIL - LOW PRIORITY\n  // ============================================\n  if (setting === 'email_low_enabled') config.email.low.enabled = enabled;\n  if (setting === 'email_low_from') config.email.low.from = value;\n  if (setting === 'email_low_to') config.email.low.to = value;\n  if (setting === 'email_low_cc' && value) config.email.low.cc = value;\n  if (setting === 'email_low_bcc' && value) config.email.low.bcc = value;\n  \n  // ============================================\n  // EMAIL - CUSTOMER CONFIRMATION\n  // ============================================\n  if (setting === 'email_customer_enabled') config.email.customer.enabled = enabled;\n  if (setting === 'email_customer_from') config.email.customer.from = value;\n  if (setting === 'email_customer_subject') config.email.customer.subject = value;\n  if (setting === 'email_customer_body_template') config.email.customer.body_template = value;\n  \n  // ============================================\n  // EMAIL - ERROR ALERTS\n  // ============================================\n  if (setting === 'email_error_enabled') config.email.error.enabled = enabled;\n  if (setting === 'email_error_from') config.email.error.from = value;\n  if (setting === 'email_error_to') config.email.error.to = value;\n  if (setting === 'email_error_cc' && value) config.email.error.cc = value;\n\n  // ============================================\n  // CRM GLOBAL ENABLE/DISABLE\n  // ============================================\n  if (setting === 'crm_enabled') config.crm.enabled = enabled;\n  \n  // ============================================\n  // CRM INTEGRATIONS\n  // ============================================\n  if (setting === 'hubspot_api_key') {\n    config.crm.hubspot_api_key = value;\n    config.crm.enable_hubspot = enabled;\n  }\n  \n  if (setting === 'salesforce_instance_url') config.crm.salesforce_instance_url = value;\n  if (setting === 'salesforce_access_token') {\n    config.crm.salesforce_access_token = value;\n    config.crm.enable_salesforce = enabled;\n  }\n  \n  if (setting === 'crm_webhook_url') {\n    config.crm.webhook_url = value;\n    config.crm.enable_webhook = enabled;\n  }\n}\n\n// Merge lead data with organized config\nconst mergedData = {\n  ...leadData,\n  _email_config: config.email,\n  _notification_config: config.notifications,\n  _crm_config: config.crm\n};\n\nreturn [{ json: mergedData }];"
+        "jsCode": "// ============================================\n// TRANSFORM CONFIG FROM SHEET TO OBJECT\n// ============================================\n\nconst configRows = $('Load Config').all();\nconst leadData = $('Webhook').first().json.body || $('Webhook').first().json;\n\n// Helper: Generate random 8-character alphanumeric ID\nfunction generateId(length = 8) {\n  return Array.from({ length }, () => Math.random().toString(36)[2])\n    .join('')\n    .toUpperCase();\n}\n\n// ============================================\n// ADD ID (if missing) AND SUBMISSION TIMESTAMP\n// ============================================\nif (!leadData.id || typeof leadData.id !== 'string' || leadData.id.trim() === '') {\n  leadData.id = generateId();\n}\n\n// Always add submission timestamp\nleadData.submittedAt = new Date().toISOString();\n\n// ============================================\n// BUILD CONFIG OBJECT FROM SHEET\n// ============================================\n\nconst config = {\n  email: {\n    high: {},\n    medium: {},\n    low: {},\n    customer: {},\n    error: {}\n  },\n  notifications: {\n    slack: {},\n    discord: {},\n    twilio: {},\n    sns: {}\n  },\n  crm: {}\n};\n\n// ============================================\n// PARSE INTEGRATION SETTINGS FROM SHEET\n// ============================================\nfor (const row of configRows) {\n  const setting = row.json.Setting;\n  const value = row.json.Value;\n  const enabled = row.json.Enabled === 'TRUE' || row.json.Enabled === true;\n\n  // SLACK\n  if (setting === 'slack_webhook_url') config.notifications.slack.webhook_url = value;\n  if (setting === 'slack_channel') {\n    config.notifications.slack.channel = value;\n    config.notifications.slack.enabled = enabled;\n  }\n\n  // DISCORD\n  if (setting === 'discord_webhook_url') {\n    config.notifications.discord.webhook_url = value;\n    config.notifications.discord.enabled = enabled;\n  }\n\n  // TWILIO\n  if (setting === 'twilio_account_sid') config.notifications.twilio.account_sid = value;\n  if (setting === 'twilio_auth_token') config.notifications.twilio.auth_token = value;\n  if (setting === 'twilio_from_number') config.notifications.twilio.from_number = value;\n  if (setting === 'twilio_to_number') {\n    config.notifications.twilio.to_number = value;\n    config.notifications.twilio.enabled = enabled;\n  }\n\n  // AWS SNS\n  if (setting === 'sns_region') config.notifications.sns.region = value;\n  if (setting === 'sns_topic_arn') config.notifications.sns.topic_arn = value;\n  if (setting === 'sns_phone_number') {\n    config.notifications.sns.phone_number = value;\n    config.notifications.sns.enabled = enabled;\n  }\n\n  // EMAIL - HIGH PRIORITY\n  if (setting === 'email_high_enabled') config.email.high.enabled = enabled;\n  if (setting === 'email_high_from') config.email.high.from = value;\n  if (setting === 'email_high_to') config.email.high.to = value;\n  if (setting === 'email_high_cc' && value) config.email.high.cc = value;\n  if (setting === 'email_high_bcc' && value) config.email.high.bcc = value;\n\n  // EMAIL - MEDIUM PRIORITY\n  if (setting === 'email_medium_enabled') config.email.medium.enabled = enabled;\n  if (setting === 'email_medium_from') config.email.medium.from = value;\n  if (setting === 'email_medium_to') config.email.medium.to = value;\n  if (setting === 'email_medium_cc' && value) config.email.medium.cc = value;\n  if (setting === 'email_medium_bcc' && value) config.email.medium.bcc = value;\n\n  // EMAIL - LOW PRIORITY\n  if (setting === 'email_low_enabled') config.email.low.enabled = enabled;\n  if (setting === 'email_low_from') config.email.low.from = value;\n  if (setting === 'email_low_to') config.email.low.to = value;\n  if (setting === 'email_low_cc' && value) config.email.low.cc = value;\n  if (setting === 'email_low_bcc' && value) config.email.low.bcc = value;\n\n  // EMAIL - CUSTOMER CONFIRMATION\n  if (setting === 'email_customer_enabled') config.email.customer.enabled = enabled;\n  if (setting === 'email_customer_from') config.email.customer.from = value;\n  if (setting === 'email_customer_subject') config.email.customer.subject = value;\n  if (setting === 'email_customer_body_template') config.email.customer.body_template = value;\n\n  // EMAIL - ERROR ALERTS\n  if (setting === 'email_error_enabled') config.email.error.enabled = enabled;\n  if (setting === 'email_error_from') config.email.error.from = value;\n  if (setting === 'email_error_to') config.email.error.to = value;\n  if (setting === 'email_error_cc' && value) config.email.error.cc = value;\n\n  // CRM ENABLE/DISABLE\n  if (setting === 'crm_enabled') config.crm.enabled = enabled;\n\n  // CRM INTEGRATIONS\n  if (setting === 'hubspot_api_key') {\n    config.crm.hubspot_api_key = value;\n    config.crm.enable_hubspot = enabled;\n  }\n\n  if (setting === 'salesforce_instance_url') config.crm.salesforce_instance_url = value;\n  if (setting === 'salesforce_access_token') {\n    config.crm.salesforce_access_token = value;\n    config.crm.enable_salesforce = enabled;\n  }\n\n  if (setting === 'crm_webhook_url') {\n    config.crm.webhook_url = value;\n    config.crm.enable_webhook = enabled;\n  }\n}\n\n// ============================================\n// MERGE LEAD DATA WITH ORGANIZED CONFIG\n// ============================================\n\nconst mergedData = {\n  ...leadData,\n  _email_config: config.email,\n  _notification_config: config.notifications,\n  _crm_config: config.crm\n};\n\nreturn [{ json: mergedData }];\n"
       },
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
@@ -2097,31 +2078,6 @@
       "name": "Metadata Initialized"
     },
     {
-      "parameters": {
-        "respondWith": "json",
-        "responseBody": "={\n  \"success\": true,\n  \"message\": \"Lead captured successfully\"\n}",
-        "options": {
-          "responseCode": 200,
-          "responseHeaders": {
-            "entries": [
-              {
-                "name": "Content-Type",
-                "value": "application/json"
-              }
-            ]
-          }
-        }
-      },
-      "type": "n8n-nodes-base.respondToWebhook",
-      "typeVersion": 1.4,
-      "position": [
-        1984,
-        144
-      ],
-      "id": "b40eefe1-2ae8-44a2-8e08-69ba823909b6",
-      "name": "Respond to Webhook1"
-    },
-    {
       "parameters": {},
       "type": "n8n-nodes-base.noOp",
       "typeVersion": 1,
@@ -2209,7 +2165,7 @@
             "customPropertiesValues": [
               {
                 "property": "lead_id",
-                "value": "={{ $json.id }}"
+                "value": "={{ $json.id || Array.from({length: 8}, () => (Math.random().toString(36)[2])).join('').toUpperCase() }}"
               },
               {
                 "property": "lead_priority",
@@ -2307,6 +2263,48 @@
       ],
       "id": "5d842340-f0ee-4011-bbe9-d12112caa6c4",
       "name": "Merge Response"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"success\": true,\n  \"message\": \"Lead captured successfully\"\n}",
+        "options": {
+          "responseCode": 200,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        1984,
+        144
+      ],
+      "id": "b40eefe1-2ae8-44a2-8e08-69ba823909b6",
+      "name": "Result"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "{\n  \"success\": false,\n  \"error\": \"Duplicate lead detected\"\n}",
+        "options": {
+          "responseCode": 400
+        }
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        1984,
+        -32
+      ],
+      "id": "1b8f8130-f7fc-4141-83e0-afde5ece41d6",
+      "name": "Duplicate Response"
     }
   ],
   "pinData": {},
@@ -2848,14 +2846,14 @@
       "main": [
         [
           {
-            "node": "Stop and Error",
+            "node": "Duplicate Response",
             "type": "main",
             "index": 0
           }
         ],
         [
           {
-            "node": "Respond to Webhook1",
+            "node": "Result",
             "type": "main",
             "index": 0
           }
@@ -3004,17 +3002,6 @@
         ]
       ]
     },
-    "Respond to Webhook1": {
-      "main": [
-        [
-          {
-            "node": "Scoring",
-            "type": "main",
-            "index": 0
-          }
-        ]
-      ]
-    },
     "Restore Data": {
       "main": [
         [
@@ -3102,13 +3089,24 @@
           }
         ]
       ]
+    },
+    "Result": {
+      "main": [
+        [
+          {
+            "node": "Scoring",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     }
   },
   "active": false,
   "settings": {
     "executionOrder": "v1"
   },
-  "versionId": "1189f0e9-0171-4768-8022-35ff51779e82",
+  "versionId": "0daf12c7-0a08-4775-9178-11afcdad2d61",
   "meta": {
     "templateCredsSetupCompleted": true,
     "instanceId": "2a11f8c5984af6658417a114c02424abb1ef515b9b26d79258137599ef3e4436"
