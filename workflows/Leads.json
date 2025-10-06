@@ -1,0 +1,3118 @@
+{
+  "name": "Leads",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "leads",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -480,
+        128
+      ],
+      "id": "d9d40bf1-face-4865-b657-9d2232a91073",
+      "name": "Webhook",
+      "webhookId": "e0bf5887-0db1-4fc1-9406-5b706dad4ace"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================\n// DYNAMIC LEAD SCORING - RULES FROM SHEET\n// ============================================\n\nconst items = $input.all();\nconst scoredItems = [];\n\nfor (const item of items) {\n  const data = item.json;\n  let score = 0;\n  const scoreBreakdown = {};\n  \n  // ============================================\n  // GET SCORING RULES FROM CONFIG (loaded from sheet)\n  // ============================================\n  const scoringRules = data._config?.scoring_rules || {};\n  \n  // If no rules loaded, throw error\n  if (Object.keys(scoringRules).length === 0) {\n    throw new Error('No scoring rules found in _config.scoring_rules');\n  }\n  \n  // ============================================\n  // DYNAMIC FIELD SCORING\n  // ============================================\n  \n  // 1. Score based on which fields are present\n  if (data.phone && scoringRules.has_phone) {\n    const points = parseInt(scoringRules.has_phone) || 0;\n    score += points;\n    scoreBreakdown.has_phone = points;\n  }\n  \n  if (data.company && scoringRules.has_company) {\n    const points = parseInt(scoringRules.has_company) || 0;\n    score += points;\n    scoreBreakdown.has_company = points;\n  }\n  \n  if (data.website && scoringRules.has_website) {\n    const points = parseInt(scoringRules.has_website) || 0;\n    score += points;\n    scoreBreakdown.has_website = points;\n  }\n  \n  if (data.budget && scoringRules.has_budget) {\n    const points = parseInt(scoringRules.has_budget) || 0;\n    score += points;\n    scoreBreakdown.has_budget = points;\n  }\n  \n  // 2. Email domain quality (if email exists)\n  if (data.email) {\n    const emailDomain = data.email.split('@')[1]?.toLowerCase() || '';\n    const freeEmailDomains = ['gmail.com', 'yahoo.com', 'hotmail.com', 'outlook.com', 'aol.com', 'icloud.com'];\n    \n    if (freeEmailDomains.includes(emailDomain)) {\n      const points = parseInt(scoringRules.email_free) || 0;\n      score += points;\n      scoreBreakdown.email_free = points;\n    } else {\n      const points = parseInt(scoringRules.email_business) || 0;\n      score += points;\n      scoreBreakdown.email_business = points;\n    }\n  }\n  \n  // 3. Message length (if message exists)\n  if (data.message) {\n    const messageLength = data.message.length;\n    let points = 0;\n    \n    if (messageLength >= 100 && scoringRules.message_long) {\n      points = parseInt(scoringRules.message_long) || 0;\n      scoreBreakdown.message_long = points;\n    } else if (messageLength >= 50 && scoringRules.message_medium) {\n      points = parseInt(scoringRules.message_medium) || 0;\n      scoreBreakdown.message_medium = points;\n    } else if (scoringRules.message_short) {\n      points = parseInt(scoringRules.message_short) || 0;\n      scoreBreakdown.message_short = points;\n    }\n    \n    score += points;\n  }\n  \n  // 4. Lead source quality\n  const source = (data.source || data._metadata?.source || '').toLowerCase();\n  let sourcePoints = 0;\n  \n  if (source.includes('google-ads') || source.includes('linkedin') || source.includes('facebook-ads')) {\n    sourcePoints = parseInt(scoringRules.source_paid) || 0;\n    scoreBreakdown.source_paid = sourcePoints;\n  } else if (source.includes('website') || source.includes('referral') || source.includes('organic')) {\n    sourcePoints = parseInt(scoringRules.source_organic) || 0;\n    scoreBreakdown.source_organic = sourcePoints;\n  } else {\n    sourcePoints = parseInt(scoringRules.source_other) || 0;\n    scoreBreakdown.source_other = sourcePoints;\n  }\n  \n  score += sourcePoints;\n  \n  // ============================================\n  // CUSTOM FIELD SCORING (Field-Agnostic)\n  // ============================================\n  // Loop through ALL scoring rules and check if lead has that field\n  // This allows clients to add custom fields to the sheet like:\n  // has_industry, has_job_title, has_employees, etc.\n  \n  for (const [ruleName, rulePoints] of Object.entries(scoringRules)) {\n    // Skip already processed rules\n    if (ruleName.startsWith('has_') || \n        ruleName.startsWith('email_') || \n        ruleName.startsWith('message_') || \n        ruleName.startsWith('source_') || \n        ruleName.startsWith('priority_')) {\n      continue;\n    }\n    \n    // Check if lead has this custom field\n    const fieldName = ruleName.replace('custom_', '');\n    if (data[fieldName] && data[fieldName] !== '') {\n      const points = parseInt(rulePoints) || 0;\n      score += points;\n      scoreBreakdown[`custom_${fieldName}`] = points;\n    }\n  }\n  \n  // ============================================\n  // Cap score at 100\n  // ============================================\n  score = Math.min(score, 100);\n  \n  // ============================================\n  // Determine Priority (from sheet thresholds)\n  // ============================================\n  const highThreshold = parseInt(scoringRules.priority_high_threshold) || 70;\n  const mediumThreshold = parseInt(scoringRules.priority_medium_threshold) || 40;\n  \n  let priority, priorityLabel;\n  \n  if (score >= highThreshold) {\n    priority = 'HIGH';\n    priorityLabel = '🔴 HIGH';\n  } else if (score >= mediumThreshold) {\n    priority = 'MEDIUM';\n    priorityLabel = '🟡 MEDIUM';\n  } else {\n    priority = 'LOW';\n    priorityLabel = '🟢 LOW';\n  }\n  \n  // ============================================\n  // Add Score Data\n  // ============================================\n  const scoredData = {\n    ...data,\n    lead_score: score,\n    score_breakdown: scoreBreakdown,\n    priority: priority,\n    priority_label: priorityLabel\n  };\n  \n  console.log(`✅ Lead: ${data.name || 'Unknown'} | Score: ${score}/100 | Priority: ${priority}`);\n  \n  scoredItems.push({ json: scoredData });\n}\n\nreturn scoredItems;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2224,
+        144
+      ],
+      "id": "f19a61ac-c3b7-40c0-9208-2d0bc79e3427",
+      "name": "Scoring"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================\n// SIMPLIFIED VALIDATION (No Config Validation)\n// ============================================\nconst items = $input.all();\nconst validatedItems = [];\n\nfor (const item of items) {\n  const data = item.json;\n  \n  // ============================================\n  // STEP 1: Required Fields Check\n  // ============================================\n  const requiredFields = ['email', 'name'];\n  const missingFields = requiredFields.filter(field => !data[field] || String(data[field]).trim() === '');\n  \n  if (missingFields.length > 0) {\n    console.log(`❌ Missing required: ${missingFields.join(', ')}`);\n    continue;\n  }\n  \n  // ============================================\n  // STEP 2: Email Validation\n  // ============================================\n  const emailRegex = /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/;\n  if (!emailRegex.test(data.email)) {\n    console.log(`❌ Invalid email: ${data.email}`);\n    continue;\n  }\n  \n  // ============================================\n  // STEP 3: Phone Validation (if exists)\n  // ============================================\n  if (data.phone) {\n    const phoneRegex = /^\\+[1-9]\\d{1,14}$/;\n    if (!phoneRegex.test(data.phone)) {\n      console.log(`⚠️ Phone not E.164 format: ${data.phone}`);\n    }\n  }\n  \n  // ============================================\n  // STEP 4: Clean Data\n  // ============================================\n  const cleanedData = {};\n  \n  for (const [key, value] of Object.entries(data)) {\n    // Skip internal fields EXCEPT important config fields\n    if (key.startsWith('_') && \n        key !== '_email_config' && \n        key !== '_notification_config' &&\n        key !== '_crm_config' &&\n        key !== '_config') {\n      continue;\n    }\n    \n    if (typeof value === 'string') {\n      cleanedData[key] = value.trim();\n    } else {\n      cleanedData[key] = value;\n    }\n  }\n  \n  if (cleanedData.email) {\n    cleanedData.email = cleanedData.email.toLowerCase();\n  }\n  \n  // ============================================\n  // STEP 5: Add Metadata\n  // ============================================\n  cleanedData._metadata = {\n    lead_id: `LEAD-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,\n    timestamp: new Date().toISOString(),\n    status: 'new',\n    source: data.source || 'unknown'\n  };\n  \n  // ============================================\n  // STEP 6: Preserve ALL Config Objects\n  // ============================================\n  if (data._config) cleanedData._config = data._config;\n  if (data._email_config) cleanedData._email_config = data._email_config;\n  if (data._notification_config) cleanedData._notification_config = data._notification_config;\n  if (data._crm_config) cleanedData._crm_config = data._crm_config;\n  \n  validatedItems.push({ json: cleanedData });\n}\n\nif (validatedItems.length === 0) {\n  throw new Error('No valid leads after validation');\n}\n\nconsole.log(`✅ Validated ${validatedItems.length} lead(s)`);\nreturn validatedItems;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        576,
+        128
+      ],
+      "id": "56907be1-6dd3-40a7-afa9-7aa91bd82119",
+      "name": "Validations"
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nconst metadataSettings = $('Load Metadata').all();\n\n// Find HIGH priority settings\nconst highSettings = metadataSettings.find(row => row.json.Priority === 'HIGH')?.json || {\n  response_time: 'immediate',\n  urgency: 'critical',\n  assigned_to: 'sales-team-lead'\n};\n\nreturn items.map(item => ({\n  json: {\n    ...item.json,\n    response_time: highSettings.response_time,\n    urgency: highSettings.urgency,\n    assigned_to: highSettings.assigned_to,\n    timestamp: new Date().toISOString()\n  }\n}));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3424,
+        -848
+      ],
+      "id": "e90eac67-e053-4690-baa5-9aa533f10f70",
+      "name": "High Priority Metadata"
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nreturn items.map(item => {\n  const lead = item.json;\n  \n  // Build dynamic field list (exclude internal fields)\n  let customFieldsText = '';\n  for (const [key, value] of Object.entries(lead)) {\n    // Skip system fields\n    if (key.startsWith('_') || key === 'lead_score' || key === 'priority' || \n        key === 'score_breakdown' || key.includes('enable_') || \n        key.includes('slack_') || key.includes('discord_') || \n        key.includes('twilio_') || key.includes('sns_') || \n        key.includes('hubspot_') || key.includes('salesforce_') ||\n        key.includes('crm_')) {\n      continue;\n    }\n    \n    if (value && value !== '') {\n      customFieldsText += `${key}: ${value}\\n`;\n    }\n  }\n  \n  const alertMessage = `🚨 HIGH PRIORITY LEAD 🚨\nLead ID: ${lead._metadata.lead_id}\nScore: ${lead.lead_score}/100\n\n📋 LEAD DETAILS:\n${customFieldsText}\n⏰ Submitted: ${new Date(lead._metadata.timestamp).toLocaleString()}\n\n🎯 ACTION REQUIRED: Respond within 15 minutes`;\n\n  return {\n    json: {\n      ...lead,\n      formatted_alert: alertMessage,\n      email_subject: `🚨 URGENT: High Priority Lead - ${lead.name || 'Unknown'} (Score: ${lead.lead_score})`,\n      email_body: alertMessage\n    }\n  };\n});"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3424,
+        -608
+      ],
+      "id": "0966f3de-4a81-417d-8c13-522775b63b4a",
+      "name": "High Priority Alert"
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nconst metadataSettings = $('Load Metadata').all();\n\nconst mediumSettings = metadataSettings.find(row => row.json.Priority === 'MEDIUM')?.json || {\n  response_time: '4_hours',\n  urgency: 'moderate',\n  assigned_to: 'sales-team'\n};\n\nreturn items.map(item => ({\n  json: {\n    ...item.json,\n    response_time: mediumSettings.response_time,\n    urgency: mediumSettings.urgency,\n    assigned_to: mediumSettings.assigned_to,\n    timestamp: new Date().toISOString()\n  }\n}));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3408,
+        -112
+      ],
+      "id": "f87a4f37-413a-4f5e-be95-714bfaf88910",
+      "name": "Medium Priority Metadata"
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nreturn items.map(item => {\n  const lead = item.json;\n  \n  // Build dynamic field list\n  let customFieldsText = '';\n  for (const [key, value] of Object.entries(lead)) {\n    if (key.startsWith('_') || key === 'lead_score' || key === 'priority' || \n        key === 'score_breakdown' || key.includes('enable_') || \n        key.includes('slack_') || key.includes('discord_') || \n        key.includes('twilio_') || key.includes('sns_') || \n        key.includes('hubspot_') || key.includes('salesforce_') ||\n        key.includes('crm_')) {\n      continue;\n    }\n    \n    if (value && value !== '') {\n      customFieldsText += `${key}: ${value}\\n`;\n    }\n  }\n  \n  const alertMessage = `📋 MEDIUM PRIORITY LEAD\nLead ID: ${lead._metadata.lead_id}\nScore: ${lead.lead_score}/100\n\n📋 DETAILS:\n${customFieldsText}\n⏰ Submitted: ${new Date(lead._metadata.timestamp).toLocaleString()}\n\n🎯 ACTION: Respond within 4 hours`;\n\n  return {\n    json: {\n      ...lead,\n      formatted_alert: alertMessage,\n      email_subject: `New Lead: ${lead.name || 'Unknown'} (Score: ${lead.lead_score})`,\n      email_body: alertMessage\n    }\n  };\n});"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3408,
+        128
+      ],
+      "id": "396b78c1-d5d7-4386-89be-a8f6d67fb96b",
+      "name": "Medium Priority Alert"
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nconst metadataSettings = $('Load Metadata').all();\n\nconst lowSettings = metadataSettings.find(row => row.json.Priority === 'LOW')?.json || {\n  response_time: '24_hours',\n  urgency: 'low',\n  assigned_to: 'nurture-team'\n};\n\nreturn items.map(item => ({\n  json: {\n    ...item.json,\n    response_time: lowSettings.response_time,\n    urgency: lowSettings.urgency,\n    assigned_to: lowSettings.assigned_to,\n    timestamp: new Date().toISOString()\n  }\n}));"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3408,
+        640
+      ],
+      "id": "75deb657-8874-4a0c-81b1-9ad1c1415ba3",
+      "name": "Low Priority Metadata"
+    },
+    {
+      "parameters": {
+        "jsCode": "const items = $input.all();\nreturn items.map(item => {\n  const lead = item.json;\n  \n  // Build dynamic field list\n  let customFieldsText = '';\n  for (const [key, value] of Object.entries(lead)) {\n    if (key.startsWith('_') || key === 'lead_score' || key === 'priority' || \n        key === 'score_breakdown' || key.includes('enable_') || \n        key.includes('slack_') || key.includes('discord_') || \n        key.includes('twilio_') || key.includes('sns_') || \n        key.includes('hubspot_') || key.includes('salesforce_') ||\n        key.includes('crm_')) {\n      continue;\n    }\n    \n    if (value && value !== '') {\n      customFieldsText += `${key}: ${value}\\n`;\n    }\n  }\n  \n  const alertMessage = `📝 LOW PRIORITY LEAD\nLead ID: ${lead._metadata.lead_id}\nScore: ${lead.lead_score}/100\n\n📋 DETAILS:\n${customFieldsText}\n⏰ Submitted: ${new Date(lead._metadata.timestamp).toLocaleString()}\n\n🎯 ACTION: Add to nurture campaign`;\n\n  return {\n    json: {\n      ...lead,\n      formatted_alert: alertMessage,\n      email_subject: `New Inquiry: ${lead.name || 'Unknown'}`,\n      email_body: alertMessage\n    }\n  };\n});"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        3408,
+        880
+      ],
+      "id": "1169f80f-2896-45ea-8d50-2af4e013e90f",
+      "name": "Low Priority Alert"
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "1tcrIE022pyV22L_heNaY573CJzEMukyoP6U6YRgrwBU",
+          "mode": "list",
+          "cachedResultName": "Lead Capture Database",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1tcrIE022pyV22L_heNaY573CJzEMukyoP6U6YRgrwBU/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "High",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1tcrIE022pyV22L_heNaY573CJzEMukyoP6U6YRgrwBU/edit#gid=0"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Name": "={{ $json.name }}",
+            "Lead ID": "={{ $json.id }}",
+            "Phone": "={{ $json.phone }}",
+            "Company": "={{ $json.company }}",
+            "Message": "={{ $json.message }}",
+            "Source": "={{ $json.source }}",
+            "Score": "={{ $json.leadScore }}",
+            "Priority": "={{ $json.priority }}",
+            "Created": "={{ $json.submittedAt }}",
+            "Email": "={{ $json.email }}"
+          },
+          "matchingColumns": [
+            "Lead ID"
+          ],
+          "schema": [
+            {
+              "id": "Lead ID",
+              "displayName": "Lead ID",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Email",
+              "displayName": "Email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Name",
+              "displayName": "Name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Phone",
+              "displayName": "Phone",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Company",
+              "displayName": "Company",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Message",
+              "displayName": "Message",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Source",
+              "displayName": "Source",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Score",
+              "displayName": "Score",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Priority",
+              "displayName": "Priority",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Created",
+              "displayName": "Created",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        3408,
+        -384
+      ],
+      "id": "93127e39-75b8-4559-95ad-9f70d762432c",
+      "name": "High Leads DB",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "sO48IJE9nt8PbBVH",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "1tcrIE022pyV22L_heNaY573CJzEMukyoP6U6YRgrwBU",
+          "mode": "list",
+          "cachedResultName": "Lead Capture Database",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1tcrIE022pyV22L_heNaY573CJzEMukyoP6U6YRgrwBU/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 1852515225,
+          "mode": "list",
+          "cachedResultName": "Medium",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1tcrIE022pyV22L_heNaY573CJzEMukyoP6U6YRgrwBU/edit#gid=1852515225"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Name": "={{ $json.name }}",
+            "Lead ID": "={{ $json.id }}",
+            "Phone": "={{ $json.phone }}",
+            "Company": "={{ $json.company }}",
+            "Message": "={{ $json.message }}",
+            "Source": "={{ $json.source }}",
+            "Score": "={{ $json.leadScore }}",
+            "Priority": "={{ $json.priority }}",
+            "Created": "={{ $json.submittedAt }}",
+            "Email": "={{ $json.email }}"
+          },
+          "matchingColumns": [
+            "Lead ID"
+          ],
+          "schema": [
+            {
+              "id": "Lead ID",
+              "displayName": "Lead ID",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Email",
+              "displayName": "Email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Name",
+              "displayName": "Name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Phone",
+              "displayName": "Phone",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Company",
+              "displayName": "Company",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Message",
+              "displayName": "Message",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Source",
+              "displayName": "Source",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Score",
+              "displayName": "Score",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Priority",
+              "displayName": "Priority",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Created",
+              "displayName": "Created",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        3408,
+        368
+      ],
+      "id": "05894304-2479-45d4-b83c-09941a0535ff",
+      "name": "Medium Leads DB",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "sO48IJE9nt8PbBVH",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================\n// NOTIFICATION DIVIDER - MULTI-PROVIDER SUPPORT\n// ============================================\nconst input = $input.first().json;\nconst notificationConfig = input._notification_config || {};\n\n// Build array of enabled notification types\nconst enabledNotifications = [];\n\nif (notificationConfig.slack?.enabled === true && notificationConfig.slack?.webhook_url !== '-') {\n  enabledNotifications.push('slack');\n}\n\nif (notificationConfig.discord?.enabled === true && notificationConfig.discord?.webhook_url !== '-') {\n  enabledNotifications.push('discord');\n}\n\nif (notificationConfig.twilio?.enabled === true && notificationConfig.twilio?.to_number !== '-') {\n  enabledNotifications.push('twilio');\n}\n\nif (notificationConfig.sns?.enabled === true && notificationConfig.sns?.phone_number !== '-') {\n  enabledNotifications.push('sns');\n}\n\n// Return ONE item with array of enabled notifications\nreturn [{\n  json: {\n    ...input,\n    notification_types: enabledNotifications,  // ✅ ARRAY instead of string\n    has_notifications: enabledNotifications.length > 0\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        6368,
+        112
+      ],
+      "id": "fc195450-0ba6-4c19-9bc4-a34bb5dce239",
+      "name": "Notification Divider"
+    },
+    {
+      "parameters": {
+        "topic": {
+          "__rl": true,
+          "mode": "list",
+          "value": ""
+        }
+      },
+      "type": "n8n-nodes-base.awsSns",
+      "typeVersion": 1,
+      "position": [
+        7056,
+        496
+      ],
+      "id": "68b58331-7bc9-4422-9b2e-e29919cd6061",
+      "name": "AWS SNS",
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================\n// CRM DIVIDER - Route to CRM Integrations\n// ============================================\n\nconst input = $input.first().json;\nconst crmItems = [];\n\n// Get CRM config from the correct location\nconst crmConfig = input._crm_config || {};\n\nconsole.log('CRM Config:', JSON.stringify(crmConfig, null, 2));\n\n// ============================================\n// CHECK IF CRM IS GLOBALLY ENABLED\n// ============================================\nif (crmConfig.enabled !== true) {\n  console.log('⚠️ CRM disabled globally in config');\n  return [{\n    json: {\n      ...input,\n      crm_type: 'disabled',\n      crm_skipped: true\n    }\n  }];\n}\n\n// ============================================\n// CRM ENABLED - Create items for each enabled CRM\n// ============================================\n\n// HubSpot\nif (crmConfig.enable_hubspot === true) {\n  console.log('✅ HubSpot enabled');\n  crmItems.push({\n    json: {\n      ...input,\n      crm_type: 'hubspot'\n    }\n  });\n}\n\n// Salesforce\nif (crmConfig.enable_salesforce === true) {\n  console.log('✅ Salesforce enabled');\n  crmItems.push({\n    json: {\n      ...input,\n      crm_type: 'salesforce'\n    }\n  });\n}\n\n// Custom Webhook\nif (crmConfig.enable_webhook === true) {\n  console.log('✅ CRM Webhook enabled');\n  crmItems.push({\n    json: {\n      ...input,\n      crm_type: 'webhook'\n    }\n  });\n}\n\n// ============================================\n// If no specific CRMs enabled, skip CRM\n// ============================================\nif (crmItems.length === 0) {\n  console.log('⚠️ No specific CRM integrations enabled');\n  return [{\n    json: {\n      ...input,\n      crm_type: 'none',\n      crm_skipped: true\n    }\n  }];\n}\n\nconsole.log(`✅ Routing to ${crmItems.length} CRM(s)`);\nreturn crmItems;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        8992,
+        112
+      ],
+      "id": "fa433cd1-ed88-468c-bd74-a95202f959dc",
+      "name": "CRM Divider"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.crm_type }}",
+                    "rightValue": "hubspot",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "82c95b6f-dbbf-4d7d-8023-47742fbd5863"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "HubSpot"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "8163dbe4-a628-45e2-ba68-04bd793164b0",
+                    "leftValue": "={{ $json.crm_type }}",
+                    "rightValue": "salesforce",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "SalesForce"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "06d2b180-4907-4545-b930-67dca3862409",
+                    "leftValue": "={{ $json.crm_type }}",
+                    "rightValue": "Webhook",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Webhook"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.3,
+      "position": [
+        9472,
+        -272
+      ],
+      "id": "74928d5c-1248-431f-931e-ecde0988d54b",
+      "name": "CRM Routes"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.priority }}",
+                    "rightValue": "HIGH",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "bbb4b0ab-d9f0-4091-a926-7e8455a68daf"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "High Priority"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "eafa0783-bb33-4bd3-bc79-07463081a92f",
+                    "leftValue": "={{ $json.priority }}",
+                    "rightValue": "MEDIUM",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Medium Priority "
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "e2f7d7fe-c719-485f-bc88-433002ae5951",
+                    "leftValue": "={{ $json.priority }}",
+                    "rightValue": "LOW",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Low Priority"
+            }
+          ]
+        },
+        "looseTypeValidation": true,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.3,
+      "position": [
+        2848,
+        128
+      ],
+      "id": "f45e0533-8341-478a-a2e4-698c9ab06a50",
+      "name": "Priority Routes"
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.notification_types.includes('slack') }}",
+                    "rightValue": "true",
+                    "operator": {
+                      "type": "boolean",
+                      "operation": "true",
+                      "singleValue": true
+                    },
+                    "id": "6328ea91-ff4b-4bd9-9b16-5c8ae9407d25"
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Slack"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "fd20ad67-c74b-4db4-b55c-95daa48c98de",
+                    "leftValue": "={{ $json.notification_types.includes('discord') }}",
+                    "rightValue": "discord",
+                    "operator": {
+                      "type": "boolean",
+                      "operation": "true",
+                      "singleValue": true
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Discord"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "b47f3ec1-73d5-4792-bb4f-cd7284c39e63",
+                    "leftValue": "={{ true }}",
+                    "rightValue": "none",
+                    "operator": {
+                      "type": "boolean",
+                      "operation": "true",
+                      "singleValue": true
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Default"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "b71b4568-3129-4e1d-977a-9c5e52628754",
+                    "leftValue": "={{ $json.notification_types.includes('twilio') }}",
+                    "rightValue": "twilo",
+                    "operator": {
+                      "type": "boolean",
+                      "operation": "true",
+                      "singleValue": true
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "Twilo"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "a7c89bcc-13a6-4665-875f-d2f79142e44a",
+                    "leftValue": "={{ $json.notification_types.includes('sns') }}",
+                    "rightValue": "sns",
+                    "operator": {
+                      "type": "boolean",
+                      "operation": "true",
+                      "singleValue": true
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "AWS SNS"
+            }
+          ]
+        },
+        "options": {
+          "allMatchingOutputs": true
+        }
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.3,
+      "position": [
+        6560,
+        64
+      ],
+      "id": "359aac00-df3c-46ef-abc9-2d90a966568d",
+      "name": "Notification Routes"
+    },
+    {
+      "parameters": {
+        "additionalFields": {}
+      },
+      "type": "n8n-nodes-base.salesforce",
+      "typeVersion": 1,
+      "position": [
+        10048,
+        -256
+      ],
+      "id": "1d108082-bc4c-496d-aef1-6d2c083c5587",
+      "name": "SalesForce Lead",
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        10048,
+        -80
+      ],
+      "id": "50d39a8e-063c-4043-a568-86898b3900bf",
+      "name": "CRM Webhook ",
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "ca87f28f-0462-4929-83ce-678806697eb2",
+              "leftValue": "={{ $json.has_error }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        5296,
+        -32
+      ],
+      "id": "00390d9f-3ac4-43a3-b5a0-684c34f4e38f",
+      "name": "Has Errors ?"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================\n// ERROR LOGGER - Notifications\n// ============================================\nconst items = $input.all();\nconst processedItems = [];\n\nfor (const item of items) {\n  if (item.error) {\n    // Notification failed\n    const notificationType = item.json.notification_type || 'unknown';\n    const errorConfig = item.json._email_config?.error;\n    \n    processedItems.push({\n      json: {\n        ...item.json,\n        error_node: `Notification - ${notificationType}`,\n        error_type: item.error.name || 'Unknown Error',\n        error_message: item.error.message || 'No error message',\n        full_error_details: JSON.stringify(item.error),\n        timestamp: new Date().toISOString(),\n        id: item.json._metadata?.id || 'unknown',\n        email: item.json.email || 'unknown',\n        priority: item.json.priority || 'unknown',\n        notification_type: notificationType,\n        // Include notification-specific details for debugging\n        slack_channel: item.json.slack_channel || null,\n        discord_webhook: item.json.discord_webhook_url ? 'configured' : null,\n        twilio_to: item.json.twilio_to_number || null,\n        sns_phone: item.json.sns_phone_number || null,\n        // Add error email config\n        error_email_from: errorConfig?.from || 'alerts@company.com',\n        error_email_to: errorConfig?.to || 'admin@company.com',\n        error_email_cc: errorConfig?.cc || '',\n        error_email_enabled: errorConfig?.enabled || false\n      }\n    });\n    \n    console.error(`❌ ${notificationType} notification failed: ${item.error.message}`);\n  } else {\n    // Notification succeeded\n    processedItems.push({\n      json: {\n        ...item.json\n      }\n    });\n    \n    console.log(`✅ ${item.json.notification_type || 'notification'} sent successfully`);\n  }\n}\n\nreturn processedItems;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        7888,
+        112
+      ],
+      "id": "d3c6f062-5c37-442c-9688-5ac867a5117c",
+      "name": "Notification Error Handler"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================\n// EMAIL ERROR LOGGER - PRESERVE ALL DATA\n// ============================================\nconst items = $input.all();\n\nconst allItems = items.map(item => {\n  // Get the complete original data\n  const originalData = item.json || {};\n  \n  if (item.error) {\n    // Return ALL original data + error info\n    return {\n      json: {\n        ...originalData,  // ✅ This preserves EVERYTHING\n        // Add error tracking fields (don't overwrite existing fields)\n        _error_info: {\n          has_error: true,\n          error_type: 'email_failed',\n          error_message: item.error.message || JSON.stringify(item.error),\n          error_timestamp: new Date().toISOString(),\n          error_code: item.error.code || null,\n          error_details: item.error\n        }\n      }\n    };\n  } else {\n    // Success - return ALL original data\n    return {\n      json: {\n        ...originalData,  // ✅ This preserves EVERYTHING\n        _error_info: {\n          has_error: false\n        }\n      }\n    };\n  }\n});\n\nreturn allItems;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        5104,
+        -32
+      ],
+      "id": "2c699431-e14e-4ea1-927f-7a752d48611c",
+      "name": "Email Error Handler"
+    },
+    {
+      "parameters": {
+        "fromEmail": "={{ $json.email_settings.from }}",
+        "toEmail": "={{ $json.email_settings.to }}",
+        "subject": "={{ $json.email_settings.subject }}",
+        "html": "={{ $json.email_settings.body }}",
+        "options": {
+          "ccEmail": "={{ $json.email_settings.cc }}",
+          "bccEmail": "={{ $json.email_settings.bcc }}"
+        }
+      },
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        4720,
+        -32
+      ],
+      "id": "3122655b-19c2-44e8-b8e1-767effb6877e",
+      "name": "Sending Email",
+      "webhookId": "b63f51aa-a872-4a2d-bc5e-0c3557850a44",
+      "credentials": {
+        "smtp": {
+          "id": "9BhMBjxqzOrTur9z",
+          "name": "SMTP account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "fromEmail": "=={{ $json._error_email_from }}",
+        "toEmail": "=={{ $json._error_email_to }}",
+        "subject": "=⚠️ Email Delivery Failed - Lead {{ $json._metadata.id }}",
+        "emailFormat": "text",
+        "text": "=Email delivery failed for lead:\n\nLead ID: {{ $json._metadata.id }}\nName: {{ $json.name }}\nEmail: {{ $json.email }}\n\nError: {{ $json.error_message }}\n\nOriginal Email Details:\nFrom: {{ $json._email_settings.from }}\nTo: {{ $json._email_settings.to }}\nSubject: {{ $json._email_settings.subject }}\n\nTimestamp: {{ $json.timestamp }}",
+        "options": {
+          "ccEmail": "=={{ $json._error_email_cc }}"
+        }
+      },
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        5760,
+        -160
+      ],
+      "id": "004e0cdf-0014-415d-99e2-21d9ca939122",
+      "name": "Error Alert Email",
+      "webhookId": "29636f7f-0bf1-4657-a17d-6ae77da8a3eb",
+      "credentials": {
+        "smtp": {
+          "id": "9BhMBjxqzOrTur9z",
+          "name": "SMTP account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "1tcrIE022pyV22L_heNaY573CJzEMukyoP6U6YRgrwBU",
+          "mode": "list",
+          "cachedResultName": "Lead Capture Database",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1tcrIE022pyV22L_heNaY573CJzEMukyoP6U6YRgrwBU/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 1330002553,
+          "mode": "list",
+          "cachedResultName": "Low",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1tcrIE022pyV22L_heNaY573CJzEMukyoP6U6YRgrwBU/edit#gid=1330002553"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Name": "={{ $json.name }}",
+            "Lead ID": "={{ $json.id }}",
+            "Phone": "={{ $json.phone }}",
+            "Company": "={{ $json.company }}",
+            "Message": "={{ $json.message }}",
+            "Source": "={{ $json.source }}",
+            "Score": "={{ $json.lead_score }}",
+            "Priority": "={{ $json.priority }}",
+            "Created": "={{ $json.submittedAt }}",
+            "Email": "={{ $json.email }}"
+          },
+          "matchingColumns": [
+            "Lead ID"
+          ],
+          "schema": [
+            {
+              "id": "Lead ID",
+              "displayName": "Lead ID",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Email",
+              "displayName": "Email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "Name",
+              "displayName": "Name",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Phone",
+              "displayName": "Phone",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Company",
+              "displayName": "Company",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Message",
+              "displayName": "Message",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Source",
+              "displayName": "Source",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Score",
+              "displayName": "Score",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Priority",
+              "displayName": "Priority",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "Created",
+              "displayName": "Created",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        3408,
+        1152
+      ],
+      "id": "523fc4e3-f7fa-454b-8317-1755bfda5e18",
+      "name": "Low Leads DB",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "sO48IJE9nt8PbBVH",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "numberInputs": 3
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        4032,
+        112
+      ],
+      "id": "2b085e3d-1e93-41df-aecc-31280e42499f",
+      "name": "Merge DB Nodes"
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "1tcrIE022pyV22L_heNaY573CJzEMukyoP6U6YRgrwBU",
+          "mode": "list",
+          "cachedResultName": "Lead Capture Database",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1tcrIE022pyV22L_heNaY573CJzEMukyoP6U6YRgrwBU/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 2022510776,
+          "mode": "list",
+          "cachedResultName": "Errors",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1tcrIE022pyV22L_heNaY573CJzEMukyoP6U6YRgrwBU/edit#gid=2022510776"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "timestamp": "={{ $json.timestamp }}",
+            "lead_id": "={{ $json.id }}",
+            "error_node": "={{ $json.error_node }}",
+            "error_type": "={{ $json.error_type }}",
+            "error_message": "={{ $json.error_message }}",
+            "lead_email": "={{ $json.email }}",
+            "priority": "={{ $json.priority }}",
+            "full_error_details": "={{ $json.full_error_details }}"
+          },
+          "matchingColumns": [
+            "timestamp"
+          ],
+          "schema": [
+            {
+              "id": "timestamp",
+              "displayName": "timestamp",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "lead_id",
+              "displayName": "lead_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "error_node",
+              "displayName": "error_node",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "error_type",
+              "displayName": "error_type",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "error_message",
+              "displayName": "error_message",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "lead_email",
+              "displayName": "lead_email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "priority",
+              "displayName": "priority",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "full_error_details",
+              "displayName": "full_error_details",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        5552,
+        -160
+      ],
+      "id": "bc07949e-88a3-4d2d-98d8-9a8c717e50b7",
+      "name": "Email Errors DB",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "sO48IJE9nt8PbBVH",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "numberInputs": 3
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        6192,
+        96
+      ],
+      "id": "0b1770f9-8bed-424a-b111-ac69eaeee56e",
+      "name": "Merge Email Nodes"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "0f887f98-289e-48a5-919c-e4fa44740b19",
+              "leftValue": "={{ $json.error_node }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "exists",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        8096,
+        112
+      ],
+      "id": "c26fe17a-beaf-4b32-aaa1-f642d3cbbdee",
+      "name": "Has Notification Errors ?"
+    },
+    {
+      "parameters": {
+        "numberInputs": 5
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        7440,
+        64
+      ],
+      "id": "39c3a39e-f560-412c-8895-47cd3a3533fe",
+      "name": "Merge Notification Routes"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        8800,
+        112
+      ],
+      "id": "9cc2da5b-e382-4082-9395-be4a73b3e820",
+      "name": "Merge Notification Nodes"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================\n// ERROR LOGGER - CRM\n// ============================================\nconst items = $input.all();\nconst processedItems = [];\n\nfor (const item of items) {\n  if (item.error) {\n    // CRM failed\n    const crmType = item.json.crm_type || 'unknown';\n    const errorConfig = item.json._email_config?.error;\n    \n    processedItems.push({\n      json: {\n        ...item.json,\n        error_node: `CRM - ${crmType}`,\n        error_type: 'crm_integration_error',\n        error_message: item.error.message || 'Unknown CRM error',\n        full_error_details: JSON.stringify(item.error),\n        timestamp: new Date().toISOString(),\n        id: item.json._metadata?.id || 'unknown',\n        email: item.json.email || 'unknown',\n        priority: item.json.priority || 'unknown',\n        integration_type: crmType,\n        has_crm_error: true,\n        crm_status: 'failed',\n        // Add error email config\n        error_email_from: errorConfig?.from || 'alerts@company.com',\n        error_email_to: errorConfig?.to || 'admin@company.com',\n        error_email_cc: errorConfig?.cc || '',\n        error_email_enabled: errorConfig?.enabled || false\n      }\n    });\n    \n    console.error(`❌ ${crmType} CRM failed: ${item.error.message}`);\n  } else {\n    // CRM succeeded\n    processedItems.push({\n      json: {\n        ...item.json,\n        has_crm_error: false,\n        crm_status: 'success'\n      }\n    });\n    \n    console.log(`✅ ${item.json.crm_type || 'CRM'} integration successful`);\n  }\n}\n\nreturn processedItems;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        11120,
+        -256
+      ],
+      "id": "948c1847-2925-4453-bdd7-0528d9474b85",
+      "name": "CRM Error Handler"
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "1tcrIE022pyV22L_heNaY573CJzEMukyoP6U6YRgrwBU",
+          "mode": "list",
+          "cachedResultName": "Lead Capture Database",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1tcrIE022pyV22L_heNaY573CJzEMukyoP6U6YRgrwBU/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 2022510776,
+          "mode": "list",
+          "cachedResultName": "Errors",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1tcrIE022pyV22L_heNaY573CJzEMukyoP6U6YRgrwBU/edit#gid=2022510776"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "timestamp": "={{ $json.timestamp }}",
+            "lead_id": "={{ $json.id }}",
+            "error_node": "={{ $json.error_node }}",
+            "error_type": "={{ $json.error_type }}",
+            "error_message": "={{ $json.error_message }}",
+            "lead_email": "={{ $json.email }}",
+            "priority": "={{ $json.priority }}",
+            "full_error_details": "={{ $json.full_error_details }}"
+          },
+          "matchingColumns": [
+            "timestamp"
+          ],
+          "schema": [
+            {
+              "id": "timestamp",
+              "displayName": "timestamp",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "lead_id",
+              "displayName": "lead_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "error_node",
+              "displayName": "error_node",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "error_type",
+              "displayName": "error_type",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "error_message",
+              "displayName": "error_message",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "lead_email",
+              "displayName": "lead_email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "priority",
+              "displayName": "priority",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "full_error_details",
+              "displayName": "full_error_details",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        8352,
+        -64
+      ],
+      "id": "42900352-421b-4eba-a500-0a95851b6871",
+      "name": "Notification Errors DB",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "sO48IJE9nt8PbBVH",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "1tcrIE022pyV22L_heNaY573CJzEMukyoP6U6YRgrwBU",
+          "mode": "list",
+          "cachedResultName": "Lead Capture Database",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1tcrIE022pyV22L_heNaY573CJzEMukyoP6U6YRgrwBU/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 2022510776,
+          "mode": "list",
+          "cachedResultName": "Errors",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1tcrIE022pyV22L_heNaY573CJzEMukyoP6U6YRgrwBU/edit#gid=2022510776"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "timestamp": "={{ $json.timestamp }}",
+            "lead_id": "={{ $json.id }}",
+            "error_node": "={{ $json.error_node }}",
+            "error_type": "={{ $json.error_type }}",
+            "error_message": "={{ $json.error_message }}",
+            "lead_email": "={{ $json.email }}",
+            "priority": "={{ $json.priority }}",
+            "full_error_details": "={{ $json.full_error_details }}"
+          },
+          "matchingColumns": [
+            "timestamp"
+          ],
+          "schema": [
+            {
+              "id": "timestamp",
+              "displayName": "timestamp",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "lead_id",
+              "displayName": "lead_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "error_node",
+              "displayName": "error_node",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "error_type",
+              "displayName": "error_type",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "error_message",
+              "displayName": "error_message",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "lead_email",
+              "displayName": "lead_email",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "priority",
+              "displayName": "priority",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "full_error_details",
+              "displayName": "full_error_details",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        11584,
+        -448
+      ],
+      "id": "801edad6-7e80-4909-b9d0-e9d4e41d41a4",
+      "name": "CRM Errors DB",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "sO48IJE9nt8PbBVH",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "fromEmail": "={{ $json.email_error_from }}",
+        "toEmail": "={{ $json.email_error_to }}",
+        "subject": "=⚠️ Notification Failed - {{ $json.notification_type }} - Lead {{ $json.id }}",
+        "emailFormat": "text",
+        "text": "=Notification delivery failed:\n\nLead ID: {{ $json.id }}\nName: {{ $json.name }}\nEmail: {{ $json.email }}\nPriority: {{ $json.priority }}\n\nNotification Type: {{ $json.notification_type }}\nError: {{ $json.error_message }}\n\nConfiguration Details:\nSlack Channel: {{ $json.slack_channel }}\nDiscord Webhook: {{ $json.discord_webhook }}\nTwilio To: {{ $json.twilio_to }}\nSNS Phone: {{ $json.sns_phone }}\n\nFull Error:\n{{ $json.full_error_details }}\n\nTimestamp: {{ $json.timestamp }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        8544,
+        -64
+      ],
+      "id": "cc1b9f5f-81a6-43a8-8b4b-3f189d0c0e43",
+      "name": "Error Alert Notification",
+      "webhookId": "b1680b16-8434-41fe-92d8-d90d0e386f8e",
+      "credentials": {
+        "smtp": {
+          "id": "9BhMBjxqzOrTur9z",
+          "name": "SMTP account"
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "parameters": {
+        "fromEmail": "=={{ $json.error_email_from }}",
+        "toEmail": "=={{ $json.error_email_to }}",
+        "subject": "=⚠️ CRM Failed - {{ $json.integration_type }} - Lead {{ $json.id }}",
+        "emailFormat": "text",
+        "text": "=CRM integration failed:\n\nLead ID: {{ $json.id }}\nName: {{ $json.name }}\nEmail: {{ $json.email }}\nPriority: {{ $json.priority }}\n\nCRM Type: {{ $json.integration_type }}\nError: {{ $json.error_message }}\n\nFull Error:\n{{ $json.full_error_details }}\n\nTimestamp: {{ $json.timestamp }}",
+        "options": {
+          "ccEmail": "=={{ $json.error_email_cc }}"
+        }
+      },
+      "type": "n8n-nodes-base.emailSend",
+      "typeVersion": 2.1,
+      "position": [
+        11792,
+        -448
+      ],
+      "id": "f81b8ea8-0a4e-47ce-ad88-964e7652a506",
+      "name": "Error Alert CRM",
+      "webhookId": "2ea24d8b-9fe6-4044-bf6a-4a06deb03cf2",
+      "credentials": {
+        "smtp": {
+          "id": "9BhMBjxqzOrTur9z",
+          "name": "SMTP account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "1tcrIE022pyV22L_heNaY573CJzEMukyoP6U6YRgrwBU",
+          "mode": "list",
+          "cachedResultName": "Lead Capture Database",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1tcrIE022pyV22L_heNaY573CJzEMukyoP6U6YRgrwBU/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "High",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1tcrIE022pyV22L_heNaY573CJzEMukyoP6U6YRgrwBU/edit#gid=0"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "Email",
+              "lookupValue": "={{ $json.check_email }}"
+            }
+          ]
+        },
+        "options": {
+          "returnFirstMatch": true
+        }
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1056,
+        -48
+      ],
+      "id": "ea47aa52-5e64-4128-8485-8c989fea456c",
+      "name": "Query High Mails",
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "sO48IJE9nt8PbBVH",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "1tcrIE022pyV22L_heNaY573CJzEMukyoP6U6YRgrwBU",
+          "mode": "list",
+          "cachedResultName": "Lead Capture Database",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1tcrIE022pyV22L_heNaY573CJzEMukyoP6U6YRgrwBU/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 1852515225,
+          "mode": "list",
+          "cachedResultName": "Medium",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1tcrIE022pyV22L_heNaY573CJzEMukyoP6U6YRgrwBU/edit#gid=1852515225"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "Email",
+              "lookupValue": "={{ $json.check_email }}"
+            }
+          ]
+        },
+        "options": {
+          "returnFirstMatch": true
+        }
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1056,
+        128
+      ],
+      "id": "ee132e22-f38d-427c-8073-61608b4103a3",
+      "name": "Query Medium Mails",
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "sO48IJE9nt8PbBVH",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "1tcrIE022pyV22L_heNaY573CJzEMukyoP6U6YRgrwBU",
+          "mode": "list",
+          "cachedResultName": "Lead Capture Database",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1tcrIE022pyV22L_heNaY573CJzEMukyoP6U6YRgrwBU/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 1330002553,
+          "mode": "list",
+          "cachedResultName": "Low",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1tcrIE022pyV22L_heNaY573CJzEMukyoP6U6YRgrwBU/edit#gid=1330002553"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "Email",
+              "lookupValue": "={{ $json.check_email }}"
+            }
+          ]
+        },
+        "options": {
+          "returnFirstMatch": true
+        }
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1056,
+        320
+      ],
+      "id": "0b6e8620-17a7-4d41-9c18-042b0b9d10da",
+      "name": "Query Low Mails",
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "sO48IJE9nt8PbBVH",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "numberInputs": 3
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        1344,
+        112
+      ],
+      "id": "86a9ed4c-7e28-4c5c-a374-399879055f53",
+      "name": "Merge Query Results"
+    },
+    {
+      "parameters": {
+        "jsCode": "const email = $json.email;\nconst fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);\n\nreturn [{\n  json: {\n    ...($json),\n    check_email: email,\n    check_timestamp: fiveMinutesAgo.toISOString()\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        768,
+        128
+      ],
+      "id": "8932cd0b-9f5b-47e3-a5b1-595572c49a95",
+      "name": "Prepare Duplicate Check"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================\n// DUPLICATE HANDLER - Fixed Field Names\n// ============================================\n\nconst allResults = $input.all();\nconst originalData = $('Prepare Duplicate Check').first().json;  // Changed .item to .first()\nconst fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);\n\nconsole.log('Checking for duplicates of:', originalData.email);\n\n// Check for recent duplicates across all sheet results\nconst recentDuplicates = allResults.filter(item => {\n  // Skip empty results (empty objects)\n  if (!item.json || Object.keys(item.json).length === 0) {\n    return false;\n  }\n  \n  // Google Sheets returns \"Email\" not \"email\" (capital E)\n  const sheetEmail = item.json.Email || item.json.email;\n  const sheetCreated = item.json.Created || item.json.created || item.json.timestamp;\n  \n  if (!sheetEmail) return false;\n  \n  // Check if email matches (case-insensitive)\n  const emailMatch = sheetEmail.toLowerCase() === originalData.email.toLowerCase();\n  \n  if (!emailMatch) return false;\n  \n  // If no timestamp in sheet, consider it a duplicate (safer)\n  if (!sheetCreated) {\n    console.log('⚠️ Found match but no timestamp:', sheetEmail);\n    return true;\n  }\n  \n  // Check if within 5 minutes\n  const leadTime = new Date(sheetCreated);\n  const withinTimeWindow = leadTime > fiveMinutesAgo;\n  \n  if (emailMatch && withinTimeWindow) {\n    console.log('🔴 DUPLICATE FOUND:', sheetEmail, 'created:', sheetCreated);\n  }\n  \n  return emailMatch && withinTimeWindow;\n});\n\nconsole.log(`Found ${recentDuplicates.length} duplicate(s)`);\n\n// Return original lead data with duplicate flag\nreturn [{\n  json: {\n    ...originalData,\n    is_duplicate: recentDuplicates.length > 0,\n    duplicate_count: recentDuplicates.length,\n    duplicate_details: recentDuplicates.map(d => ({\n      email: d.json.Email,\n      created: d.json.Created,\n      priority: d.json.Priority\n    }))\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1536,
+        128
+      ],
+      "id": "4be2af7f-ca4e-4a32-ac14-3a6253c8e63a",
+      "name": "Duplicate Handler"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "de9cdb68-c879-41e1-9240-f079c52644f7",
+              "leftValue": "={{ $json.is_duplicate }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1744,
+        128
+      ],
+      "id": "a63f47ab-8278-424e-aa78-0c0232c9fe10",
+      "name": "Has Duplicate ?"
+    },
+    {
+      "parameters": {
+        "errorMessage": "Duplicate Submission"
+      },
+      "type": "n8n-nodes-base.stopAndError",
+      "typeVersion": 1,
+      "position": [
+        1984,
+        -16
+      ],
+      "id": "cfb1059f-e57d-42ea-8ade-e58a8592de80",
+      "name": "Stop and Error"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "a1702b88-46d4-4083-89e6-9f1eb3321ed2",
+              "leftValue": "={{ $json.has_crm_error }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        11312,
+        -256
+      ],
+      "id": "f98ca3f3-f1b6-447b-aa54-ae19c17cb1c8",
+      "name": "Has CRM Errors ?"
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "1tcrIE022pyV22L_heNaY573CJzEMukyoP6U6YRgrwBU",
+          "mode": "list",
+          "cachedResultName": "Lead Capture Database",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1tcrIE022pyV22L_heNaY573CJzEMukyoP6U6YRgrwBU/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 799209707,
+          "mode": "list",
+          "cachedResultName": "Config",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1tcrIE022pyV22L_heNaY573CJzEMukyoP6U6YRgrwBU/edit#gid=799209707"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        -272,
+        128
+      ],
+      "id": "22620674-1ceb-4068-8ce7-949bb10af8d9",
+      "name": "Load Config",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "sO48IJE9nt8PbBVH",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================\n// TRANSFORM CONFIG FROM SHEET TO OBJECT\n// ============================================\n\nconst configRows = $('Load Config').all();\nconst leadData = $('Webhook').first().json.body || $('Webhook').first().json;\n\n// Build config object from sheet\nconst config = {\n  email: {\n    high: {},\n    medium: {},\n    low: {},\n    customer: {},\n    error: {}\n  },\n  notifications: {\n    slack: {},\n    discord: {},\n    twilio: {},\n    sns: {}\n  },\n  crm: {}\n};\n\n// Parse Integration_Settings\nfor (const row of configRows) {\n  const setting = row.json.Setting;\n  const value = row.json.Value;\n  const enabled = row.json.Enabled === 'TRUE' || row.json.Enabled === true;\n  \n  // ============================================\n  // SLACK\n  // ============================================\n  if (setting === 'slack_webhook_url') config.notifications.slack.webhook_url = value;\n  if (setting === 'slack_channel') {\n    config.notifications.slack.channel = value;\n    config.notifications.slack.enabled = enabled;\n  }\n  \n  // ============================================\n  // DISCORD\n  // ============================================\n  if (setting === 'discord_webhook_url') {\n    config.notifications.discord.webhook_url = value;\n    config.notifications.discord.enabled = enabled;\n  }\n  \n  // ============================================\n  // TWILIO\n  // ============================================\n  if (setting === 'twilio_account_sid') config.notifications.twilio.account_sid = value;\n  if (setting === 'twilio_auth_token') config.notifications.twilio.auth_token = value;\n  if (setting === 'twilio_from_number') config.notifications.twilio.from_number = value;\n  if (setting === 'twilio_to_number') {\n    config.notifications.twilio.to_number = value;\n    config.notifications.twilio.enabled = enabled;\n  }\n  \n  // ============================================\n  // AWS SNS\n  // ============================================\n  if (setting === 'sns_region') config.notifications.sns.region = value;\n  if (setting === 'sns_topic_arn') config.notifications.sns.topic_arn = value;\n  if (setting === 'sns_phone_number') {\n    config.notifications.sns.phone_number = value;\n    config.notifications.sns.enabled = enabled;\n  }\n  \n  // ============================================\n  // EMAIL - HIGH PRIORITY\n  // ============================================\n  if (setting === 'email_high_enabled') config.email.high.enabled = enabled;\n  if (setting === 'email_high_from') config.email.high.from = value;\n  if (setting === 'email_high_to') config.email.high.to = value;\n  if (setting === 'email_high_cc' && value) config.email.high.cc = value;\n  if (setting === 'email_high_bcc' && value) config.email.high.bcc = value;\n\n  // ============================================\n  // EMAIL - MEDIUM PRIORITY\n  // ============================================\n  if (setting === 'email_medium_enabled') config.email.medium.enabled = enabled;\n  if (setting === 'email_medium_from') config.email.medium.from = value;\n  if (setting === 'email_medium_to') config.email.medium.to = value;\n  if (setting === 'email_medium_cc' && value) config.email.medium.cc = value;\n  if (setting === 'email_medium_bcc' && value) config.email.medium.bcc = value;\n\n  // ============================================\n  // EMAIL - LOW PRIORITY\n  // ============================================\n  if (setting === 'email_low_enabled') config.email.low.enabled = enabled;\n  if (setting === 'email_low_from') config.email.low.from = value;\n  if (setting === 'email_low_to') config.email.low.to = value;\n  if (setting === 'email_low_cc' && value) config.email.low.cc = value;\n  if (setting === 'email_low_bcc' && value) config.email.low.bcc = value;\n  \n  // ============================================\n  // EMAIL - CUSTOMER CONFIRMATION\n  // ============================================\n  if (setting === 'email_customer_enabled') config.email.customer.enabled = enabled;\n  if (setting === 'email_customer_from') config.email.customer.from = value;\n  if (setting === 'email_customer_subject') config.email.customer.subject = value;\n  if (setting === 'email_customer_body_template') config.email.customer.body_template = value;\n  \n  // ============================================\n  // EMAIL - ERROR ALERTS\n  // ============================================\n  if (setting === 'email_error_enabled') config.email.error.enabled = enabled;\n  if (setting === 'email_error_from') config.email.error.from = value;\n  if (setting === 'email_error_to') config.email.error.to = value;\n  if (setting === 'email_error_cc' && value) config.email.error.cc = value;\n\n  // ============================================\n  // CRM GLOBAL ENABLE/DISABLE\n  // ============================================\n  if (setting === 'crm_enabled') config.crm.enabled = enabled;\n  \n  // ============================================\n  // CRM INTEGRATIONS\n  // ============================================\n  if (setting === 'hubspot_api_key') {\n    config.crm.hubspot_api_key = value;\n    config.crm.enable_hubspot = enabled;\n  }\n  \n  if (setting === 'salesforce_instance_url') config.crm.salesforce_instance_url = value;\n  if (setting === 'salesforce_access_token') {\n    config.crm.salesforce_access_token = value;\n    config.crm.enable_salesforce = enabled;\n  }\n  \n  if (setting === 'crm_webhook_url') {\n    config.crm.webhook_url = value;\n    config.crm.enable_webhook = enabled;\n  }\n}\n\n// Merge lead data with organized config\nconst mergedData = {\n  ...leadData,\n  _email_config: config.email,\n  _notification_config: config.notifications,\n  _crm_config: config.crm\n};\n\nreturn [{ json: mergedData }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -64,
+        128
+      ],
+      "id": "e407f257-da19-4d26-b34a-dfb7bf44bf52",
+      "name": "Config Initialized"
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "1tcrIE022pyV22L_heNaY573CJzEMukyoP6U6YRgrwBU",
+          "mode": "list",
+          "cachedResultName": "Lead Capture Database",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1tcrIE022pyV22L_heNaY573CJzEMukyoP6U6YRgrwBU/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 1052875733,
+          "mode": "list",
+          "cachedResultName": "Scoring_Rules",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1tcrIE022pyV22L_heNaY573CJzEMukyoP6U6YRgrwBU/edit#gid=1052875733"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        144,
+        128
+      ],
+      "id": "48ac8c05-c2b6-44e1-ad05-82c783d6f2b9",
+      "name": "Load Rules",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "sO48IJE9nt8PbBVH",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================\n// MERGE SCORING RULES INTO LEAD DATA\n// ============================================\n\nconst scoringRows = $('Load Rules').all();\nconst leadData = $('Config Initialized').first().json;\n\n// Build scoring rules object\nconst scoringRules = {};\n\nfor (const row of scoringRows) {\n  const rule = row.json.Rule;\n  const points = parseInt(row.json.Points) || 0;\n  scoringRules[rule] = points;\n}\n\n// Add to lead data\nconst finalData = {\n  ...leadData,\n  _config: {\n    scoring_rules: scoringRules\n  }\n};\n\nreturn [{ json: finalData }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        368,
+        128
+      ],
+      "id": "101453fa-e325-44e8-9d40-a9117f47d4bf",
+      "name": "Rules Initialized"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================\n// EMAIL DIVIDER - Route to Priority-Specific Emails\n// ============================================\n\nconst items = $input.all();\nconst emailItems = [];\n\nfor (const item of items) {\n  const data = item.json;\n  const priority = data.priority; // HIGH, MEDIUM, LOW\n  const emailConfig = data._email_config;\n  \n  // Check if email enabled for this priority\n  let emailEnabled = false;\n  let emailSettings = {};\n  \n  if (priority === 'HIGH' && emailConfig?.high?.enabled === true) {\n    emailEnabled = true;\n    emailSettings = {\n      from: emailConfig.high.from,\n      to: emailConfig.high.to,\n      cc: emailConfig.high.cc || '',\n      bcc: emailConfig.high.bcc || '',\n      subject: data.email_subject, // From alert node\n      body: data.email_body // From alert node\n    };\n  } else if (priority === 'MEDIUM' && emailConfig?.medium?.enabled === true) {\n    emailEnabled = true;\n    emailSettings = {\n      from: emailConfig.medium.from,\n      to: emailConfig.medium.to,\n      cc: emailConfig.medium.cc || '',\n      bcc: emailConfig.medium.bcc || '',\n      subject: data.email_subject,\n      body: data.email_body\n    };\n  } else if (priority === 'LOW' && emailConfig?.low?.enabled === true) {\n    emailEnabled = true;\n    emailSettings = {\n      from: emailConfig.low.from,\n      to: emailConfig.low.to,\n      cc: emailConfig.low.cc || '',\n      bcc: emailConfig.low.bcc || '',\n      subject: data.email_subject,\n      body: data.email_body\n    };\n  }\n  \n  emailItems.push({\n    json: {\n      ...data,\n      email_enabled: emailEnabled,  // Changed from _email_enabled\n      email_settings: emailSettings  // Changed from _email_settings\n    }\n  });\n}\n\nreturn emailItems;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4288,
+        128
+      ],
+      "id": "ccdbe9ba-550f-49f3-a88c-d2e09d10c047",
+      "name": "Email Divider"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "52efa953-91b7-4a9c-ba79-2fcbb0bc6219",
+              "leftValue": "={{ $json.email_enabled }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        4496,
+        128
+      ],
+      "id": "506ba470-4307-47ab-8e51-d482984d735b",
+      "name": "Is Enabled Email"
+    },
+    {
+      "parameters": {
+        "numberInputs": 3
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        10912,
+        -272
+      ],
+      "id": "29660f9c-6743-409d-b7b3-c0806373b292",
+      "name": "Merge CRM Integrations"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "101d6e9d-2241-40f2-9b9b-15e6cbf0e731",
+              "leftValue": "={{ $json.crm_skipped }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "notEquals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        9200,
+        112
+      ],
+      "id": "c76a9766-62a4-46d9-a5e9-c65ad11fc456",
+      "name": "CRM ENABLED ?"
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "1tcrIE022pyV22L_heNaY573CJzEMukyoP6U6YRgrwBU",
+          "mode": "list",
+          "cachedResultName": "Lead Capture Database",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1tcrIE022pyV22L_heNaY573CJzEMukyoP6U6YRgrwBU/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 1938141245,
+          "mode": "list",
+          "cachedResultName": "Metadata",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1tcrIE022pyV22L_heNaY573CJzEMukyoP6U6YRgrwBU/edit#gid=1938141245"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        2416,
+        144
+      ],
+      "id": "013b1747-9daf-4c27-8a71-9ba5b9aee24c",
+      "name": "Load Metadata",
+      "alwaysOutputData": true,
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "sO48IJE9nt8PbBVH",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================\n// TRANSFORM METADATA INTO ACCESSIBLE FORMAT\n// ============================================\n\nconst metadataRows = $('Load Metadata').all();\nconst leadData = $('Scoring').first().json; // Get lead data from Scoring node\n\n// Build metadata lookup object\nconst metadataLookup = {};\n\nfor (const row of metadataRows) {\n  const priority = row.json.Priority; // HIGH, MEDIUM, LOW\n  \n  metadataLookup[priority] = {\n    response_time: row.json.response_time,\n    urgency: row.json.urgency,\n    assigned_to: row.json.assigned_to\n  };\n}\n\n// Add metadata to lead data\nconst enrichedData = {\n  ...leadData,\n  _metadata_config: metadataLookup\n};\n\nconsole.log('✅ Metadata loaded:', Object.keys(metadataLookup));\n\nreturn [{ json: enrichedData }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2608,
+        144
+      ],
+      "id": "524cb59c-639f-4652-b25a-7433fb691658",
+      "name": "Metadata Initialized"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"success\": true,\n  \"message\": \"Lead captured successfully\"\n}",
+        "options": {
+          "responseCode": 200,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.4,
+      "position": [
+        1984,
+        144
+      ],
+      "id": "b40eefe1-2ae8-44a2-8e08-69ba823909b6",
+      "name": "Respond to Webhook1"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        9488,
+        128
+      ],
+      "id": "3c26265e-b79e-4b0b-a8fb-5c42d463c19f",
+      "name": "No Operation, do nothing"
+    },
+    {
+      "parameters": {
+        "jsCode": "// ============================================\n// RESTORE DATA AFTER EMAIL\n// ============================================\n\n// Get email results\nconst emailResults = $input.all();\n\n// Get original data from the node BEFORE Sending Email\n// Change \"Is Enabled Email\" to whatever node comes before Sending Email\nconst originalData = $('Is Enabled Email').all();\n\n// Merge them together\nreturn emailResults.map((emailItem, index) => {\n  const original = originalData[index]?.json || {};\n  const emailResult = emailItem.json || {};\n  \n  return {\n    json: {\n      ...original,  // All original data (lead info, config, etc.)\n      _email_result: emailResult  // Email send result\n    },\n    error: emailItem.error\n  };\n});"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        4912,
+        -32
+      ],
+      "id": "89cb704f-4d67-4412-b6f2-93e4409a3f65",
+      "name": "Restore Data"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json._notification_config.slack.webhook_url }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"channel\": \"{{ $json._notification_config.slack.channel }}\",\n  \"text\": \"{{ $json.priority_label }} *New Lead Captured!*\\n\\n*Contact Info:*\\n• Name: {{ $json.name }}\\n• Email: {{ $json.email }}\\n• Phone: {{ $json.phone || 'N/A' }}\\n• Company: {{ $json.company || 'N/A' }}\\n\\n*Lead Intelligence:*\\n• Lead ID: `{{ $json._metadata.lead_id }}`\\n• Score: {{ $json.lead_score }}/100\\n• Priority: {{ $json.priority_label }}\\n• Source: {{ $json.source }}\\n• Duplicate: {{ $json.is_duplicate ? '⚠️ Yes' : '✅ No' }}\\n\\n*Assignment:*\\n• Assigned To: {{ $json.assigned_to }}\\n• Response Time: {{ $json.response_time }}\\n\\n*Message:*\\n{{ $json.message || 'No message provided' }}\\n\\n🕐 Captured: {{ $json.timestamp }}\"\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        7056,
+        -224
+      ],
+      "id": "079f5829-b636-4799-8ea6-8e1d139a23d5",
+      "name": "Slack Webhook"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $json._notification_config.discord.webhook_url }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={\n  \"username\": \"Lead Capture Bot\",\n  \"avatar_url\": \"https://cdn-icons-png.flaticon.com/512/3135/3135715.png\",\n  \"embeds\": [\n    {\n      \"title\": \"{{ $json.priority === 'high' ? '🔴 HIGH PRIORITY LEAD' : $json.priority === 'medium' ? '🟡 MEDIUM PRIORITY LEAD' : '🟢 LOW PRIORITY LEAD' }}\",\n      \"description\": \"New lead has been captured and requires attention.\",\n      \"color\": \"{{ $json.priority === 'high' ? 15158332 : $json.priority === 'medium' ? 16776960 : 5763719 }}\",\n      \"fields\": [\n        {\n          \"name\": \"👤 Name\",\n          \"value\": \"{{ $json.name || 'N/A' }}\",\n          \"inline\": true\n        },\n        {\n          \"name\": \"📧 Email\",\n          \"value\": \"{{ $json.email || 'N/A' }}\",\n          \"inline\": true\n        },\n        {\n          \"name\": \"📱 Phone\",\n          \"value\": \"{{ $json.phone || 'N/A' }}\",\n          \"inline\": true\n        },\n        {\n          \"name\": \"🏢 Company\",\n          \"value\": \"{{ $json.company || 'N/A' }}\",\n          \"inline\": true\n        },\n        {\n          \"name\": \"⭐ Lead Score\",\n          \"value\": \"{{ $json.lead_score }}/100\",\n          \"inline\": true\n        },\n        {\n          \"name\": \"🎯 Priority\",\n          \"value\": \"{{ $json.priority_label }}\",\n          \"inline\": true\n        },\n        {\n          \"name\": \"📍 Source\",\n          \"value\": \"{{ $json.source || 'unknown' }}\",\n          \"inline\": true\n        },\n        {\n          \"name\": \"⏱️ Response Time\",\n          \"value\": \"{{ $json.response_time }}\",\n          \"inline\": true\n        },\n        {\n          \"name\": \"👥 Assigned To\",\n          \"value\": \"{{ $json.assigned_to || 'Unassigned' }}\",\n          \"inline\": true\n        },\n        {\n          \"name\": \"🔄 Duplicate\",\n          \"value\": \"={{ $json.is_duplicate ? '⚠️ Yes (' + $json.duplicate_count + ')' : '✅ No' }}\",\n          \"inline\": true\n        },\n        {\n          \"name\": \"🆔 Lead ID\",\n          \"value\": \"`{{ $json._metadata.lead_id }}`\",\n          \"inline\": false\n        },\n        {\n          \"name\": \"💬 Message\",\n          \"value\": \"{{ $json.message || 'No message provided' }}\",\n          \"inline\": false\n        }\n      ],\n      \"footer\": {\n        \"text\": \"Lead Capture System\"\n      },\n      \"timestamp\": \"{{ $json._metadata.timestamp || $now.toISO() }}\"\n    }\n  ]\n}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        7056,
+        -16
+      ],
+      "id": "c569daca-f469-4da6-9a55-54db4b97c5d2",
+      "name": "Discord Webhook"
+    },
+    {
+      "parameters": {
+        "from": "={{ $json._notification_config.twilio.from_number }}",
+        "to": "={{ $json._notification_config.twilio.to_number }}",
+        "toWhatsapp": true,
+        "message": "=🎯 *New Lead Captured!*  *{{ $json.priority_label }}*  *Contact Info:* - Name: {{ $json.name }} - Email: {{ $json.email }} - Phone: {{ $json.phone || 'N/A' }}  *Lead Details:* - Score: {{ $json.lead_score }}/100 - Priority: {{ $json.priority_label }} - Source: {{ $json.source }} - Lead ID: {{ $json._metadata.lead_id }}  *Message:* {{ $json.message || 'No message provided' }}  🕐 {{ $json.timestamp }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.twilio",
+      "typeVersion": 1,
+      "position": [
+        7056,
+        272
+      ],
+      "id": "0abfa1e3-20e0-42b8-8b6a-b118e33fdf96",
+      "name": "Send an SMS/MMS/WhatsApp message",
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "authentication": "appToken",
+        "email": "={{ $json.email }}",
+        "additionalFields": {
+          "companyName": "={{ $json.company || 'Unknown Company' }}",
+          "customPropertiesUi": {
+            "customPropertiesValues": [
+              {
+                "property": "lead_id",
+                "value": "={{ $json.id }}"
+              },
+              {
+                "property": "lead_priority",
+                "value": "={{ $json.priority === 'HIGH' ? 'high_priority' : $json.priority === 'MEDIUM' ? 'medium_priority' : 'low_priority' }}"
+              },
+              {
+                "property": "lead_score",
+                "value": "={{ $json.lead_score }}"
+              },
+              {
+                "property": "lead_source",
+                "value": "={{ $json.source }}"
+              }
+            ]
+          },
+          "firstName": "={{ $json.name.split(' ')[0] }}",
+          "lastName": "={{ $json.name.split(' ').slice(1).join(' ') || '-' }}",
+          "phoneNumber": "={{ $json.phone }}"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2.2,
+      "position": [
+        10048,
+        -432
+      ],
+      "id": "99d5fe3a-04e2-4f6e-b41e-646a0954252f",
+      "name": "Create or update a contact",
+      "alwaysOutputData": false,
+      "credentials": {
+        "hubspotAppToken": {
+          "id": "PWF534mwpk40YBxp",
+          "name": "HubSpot account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Remove webhook success responses, keep only lead data\nconst items = $input.all();\n\nconst leadData = items.filter(item => {\n  const keys = Object.keys(item.json);\n  \n  // Filter out webhook responses (small objects with ok/data/status)\n  if (keys.length <= 2) {\n    return false;\n  }\n  \n  // Keep items that have actual lead fields\n  return item.json.email || item.json._crm_config;\n});\n\nif (leadData.length === 0) {\n  console.log('Warning: All items filtered out, returning original');\n  return items;\n}\n\nconsole.log(`Kept ${leadData.length} of ${items.length} items`);\nreturn leadData;"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        7664,
+        112
+      ],
+      "id": "5928b7a4-4bc1-4be4-91e9-a52f67464730",
+      "name": "Purify Response"
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        11584,
+        -240
+      ],
+      "id": "27b6bef3-b4ba-4eaf-b9e7-b7fefcc713a0",
+      "name": "No Operation, do nothing1"
+    },
+    {
+      "parameters": {
+        "authentication": "appToken",
+        "resource": "deal",
+        "stage": "={{ $json.priority === 'HIGH' ? 'appointmentscheduled' : $json.priority === 'MEDIUM' ? 'qualifiedtobuy' : 'appointmentscheduled' }}",
+        "additionalFields": {
+          "dealName": "={{ $json.name }} - {{ $json.company || 'Lead' }}"
+        }
+      },
+      "type": "n8n-nodes-base.hubspot",
+      "typeVersion": 2.2,
+      "position": [
+        10512,
+        -432
+      ],
+      "id": "f1a4ba2b-8b1b-4ccb-a9ae-db95703bf0cf",
+      "name": "Create a deal",
+      "credentials": {
+        "hubspotAppToken": {
+          "id": "PWF534mwpk40YBxp",
+          "name": "HubSpot account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Get HubSpot response\nconst hubspotResponse = $input.first().json;\n\n// Get original lead data from the node BEFORE HubSpot\nconst originalData = $('CRM Routes').first().json;\n\n// Merge them\nreturn [{\n  json: {\n    ...originalData,           // All your lead data\n    hubspot_contact_id: hubspotResponse.vid,\n    hubspot_response: hubspotResponse\n  }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        10288,
+        -432
+      ],
+      "id": "5d842340-f0ee-4011-bbe9-d12112caa6c4",
+      "name": "Merge Response"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Load Config",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validations": {
+      "main": [
+        [
+          {
+            "node": "Prepare Duplicate Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Scoring": {
+      "main": [
+        [
+          {
+            "node": "Load Metadata",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "High Priority Metadata": {
+      "main": [
+        [
+          {
+            "node": "High Priority Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Medium Priority Metadata": {
+      "main": [
+        [
+          {
+            "node": "Medium Priority Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Low Priority Metadata": {
+      "main": [
+        [
+          {
+            "node": "Low Priority Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "High Priority Alert": {
+      "main": [
+        [
+          {
+            "node": "High Leads DB",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Merge DB Nodes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Low Priority Alert": {
+      "main": [
+        [
+          {
+            "node": "Low Leads DB",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Merge DB Nodes",
+            "type": "main",
+            "index": 2
+          }
+        ]
+      ]
+    },
+    "Medium Priority Alert": {
+      "main": [
+        [
+          {
+            "node": "Medium Leads DB",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Merge DB Nodes",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "High Leads DB": {
+      "main": [
+        []
+      ]
+    },
+    "Medium Leads DB": {
+      "main": [
+        []
+      ]
+    },
+    "Notification Divider": {
+      "main": [
+        [
+          {
+            "node": "Notification Routes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CRM Divider": {
+      "main": [
+        [
+          {
+            "node": "CRM ENABLED ?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AWS SNS": {
+      "main": [
+        [
+          {
+            "node": "Merge Notification Routes",
+            "type": "main",
+            "index": 4
+          }
+        ]
+      ]
+    },
+    "Priority Routes": {
+      "main": [
+        [
+          {
+            "node": "High Priority Metadata",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Medium Priority Metadata",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Low Priority Metadata",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notification Routes": {
+      "main": [
+        [
+          {
+            "node": "Slack Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Discord Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Merge Notification Routes",
+            "type": "main",
+            "index": 2
+          }
+        ],
+        [
+          {
+            "node": "Send an SMS/MMS/WhatsApp message",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "AWS SNS",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CRM Routes": {
+      "main": [
+        [
+          {
+            "node": "Create or update a contact",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "SalesForce Lead",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "CRM Webhook ",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CRM Webhook ": {
+      "main": [
+        [
+          {
+            "node": "Merge CRM Integrations",
+            "type": "main",
+            "index": 2
+          }
+        ]
+      ]
+    },
+    "SalesForce Lead": {
+      "main": [
+        [
+          {
+            "node": "Merge CRM Integrations",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Has Errors ?": {
+      "main": [
+        [
+          {
+            "node": "Email Errors DB",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Merge Email Nodes",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Email Error Handler": {
+      "main": [
+        [
+          {
+            "node": "Has Errors ?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sending Email": {
+      "main": [
+        [
+          {
+            "node": "Restore Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Error Alert Email": {
+      "main": [
+        [
+          {
+            "node": "Merge Email Nodes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Low Leads DB": {
+      "main": [
+        []
+      ]
+    },
+    "Merge DB Nodes": {
+      "main": [
+        [
+          {
+            "node": "Email Divider",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notification Error Handler": {
+      "main": [
+        [
+          {
+            "node": "Has Notification Errors ?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Email Errors DB": {
+      "main": [
+        [
+          {
+            "node": "Error Alert Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Email Nodes": {
+      "main": [
+        [
+          {
+            "node": "Notification Divider",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Notification Errors ?": {
+      "main": [
+        [
+          {
+            "node": "Notification Errors DB",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Merge Notification Nodes",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Merge Notification Routes": {
+      "main": [
+        [
+          {
+            "node": "Purify Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Notification Nodes": {
+      "main": [
+        [
+          {
+            "node": "CRM Divider",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CRM Error Handler": {
+      "main": [
+        [
+          {
+            "node": "Has CRM Errors ?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Notification Errors DB": {
+      "main": [
+        [
+          {
+            "node": "Error Alert Notification",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CRM Errors DB": {
+      "main": [
+        [
+          {
+            "node": "Error Alert CRM",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Error Alert Notification": {
+      "main": [
+        [
+          {
+            "node": "Merge Notification Nodes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Error Alert CRM": {
+      "main": [
+        []
+      ]
+    },
+    "Query Medium Mails": {
+      "main": [
+        [
+          {
+            "node": "Merge Query Results",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Query High Mails": {
+      "main": [
+        [
+          {
+            "node": "Merge Query Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Query Low Mails": {
+      "main": [
+        [
+          {
+            "node": "Merge Query Results",
+            "type": "main",
+            "index": 2
+          }
+        ]
+      ]
+    },
+    "Prepare Duplicate Check": {
+      "main": [
+        [
+          {
+            "node": "Query Medium Mails",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Query Low Mails",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Query High Mails",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Query Results": {
+      "main": [
+        [
+          {
+            "node": "Duplicate Handler",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Duplicate Handler": {
+      "main": [
+        [
+          {
+            "node": "Has Duplicate ?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Duplicate ?": {
+      "main": [
+        [
+          {
+            "node": "Stop and Error",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Respond to Webhook1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has CRM Errors ?": {
+      "main": [
+        [
+          {
+            "node": "CRM Errors DB",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "No Operation, do nothing1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Config": {
+      "main": [
+        [
+          {
+            "node": "Config Initialized",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Config Initialized": {
+      "main": [
+        [
+          {
+            "node": "Load Rules",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Rules": {
+      "main": [
+        [
+          {
+            "node": "Rules Initialized",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Rules Initialized": {
+      "main": [
+        [
+          {
+            "node": "Validations",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Email Divider": {
+      "main": [
+        [
+          {
+            "node": "Is Enabled Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Enabled Email": {
+      "main": [
+        [
+          {
+            "node": "Sending Email",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Merge Email Nodes",
+            "type": "main",
+            "index": 2
+          }
+        ]
+      ]
+    },
+    "Merge CRM Integrations": {
+      "main": [
+        [
+          {
+            "node": "CRM Error Handler",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "CRM ENABLED ?": {
+      "main": [
+        [
+          {
+            "node": "CRM Routes",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "No Operation, do nothing",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Load Metadata": {
+      "main": [
+        [
+          {
+            "node": "Metadata Initialized",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Metadata Initialized": {
+      "main": [
+        [
+          {
+            "node": "Priority Routes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Respond to Webhook1": {
+      "main": [
+        [
+          {
+            "node": "Scoring",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Restore Data": {
+      "main": [
+        [
+          {
+            "node": "Email Error Handler",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Slack Webhook": {
+      "main": [
+        [
+          {
+            "node": "Merge Notification Routes",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Discord Webhook": {
+      "main": [
+        [
+          {
+            "node": "Merge Notification Routes",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Send an SMS/MMS/WhatsApp message": {
+      "main": [
+        [
+          {
+            "node": "Merge Notification Routes",
+            "type": "main",
+            "index": 3
+          }
+        ]
+      ]
+    },
+    "Create or update a contact": {
+      "main": [
+        [
+          {
+            "node": "Merge Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Purify Response": {
+      "main": [
+        [
+          {
+            "node": "Notification Error Handler",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Response": {
+      "main": [
+        [
+          {
+            "node": "Create a deal",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create a deal": {
+      "main": [
+        [
+          {
+            "node": "Merge CRM Integrations",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "1189f0e9-0171-4768-8022-35ff51779e82",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "2a11f8c5984af6658417a114c02424abb1ef515b9b26d79258137599ef3e4436"
+  },
+  "id": "CwLIlFlHO7aMOrox",
+  "tags": []
+}

@@ -1,0 +1,43 @@
+name: Deploy n8n Workflows
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'workflows/**.json'
+      - '.github/workflows/deploy-n8n.yml'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Copy workflows to server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          source: 'workflows/*'
+          target: '~/leadcapture/workflows'
+
+      - name: Import on server
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          script: |
+            set -euo pipefail
+            # Path to your n8n docker-compose project on server
+            cd ~/n8n
+            N8N_CID=$(docker compose ps -q n8n)
+            if [ -z "$N8N_CID" ]; then
+              echo "n8n container not found. Is docker compose running in ~/n8n?" >&2
+              exit 1
+            fi
+            docker cp ~/leadcapture/workflows "$N8N_CID":/home/node/.n8n/workflows
+            docker compose exec -T n8n n8n import:workflow --input=/home/node/.n8n/workflows --overwrite
+
